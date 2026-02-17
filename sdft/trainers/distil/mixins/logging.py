@@ -3,7 +3,7 @@ from sdft.trainers.distil._imports import *
 
 class LoggingMixin:
     def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
-        mode = "train" if self.model.training else "eval"
+        mode = "eval" if any(key.startswith("eval_") for key in logs) else ("train" if self.model.training else "eval")
         metrics = {key: sum(val) / len(val) for key, val in self._metrics[mode].items()}  # average the metrics
 
         # This method can be called both in training and evaluation. When called in evaluation, the keys in `logs`
@@ -11,7 +11,8 @@ class LoggingMixin:
         if mode == "eval":
             metrics = {f"eval_{key}": val for key, val in metrics.items()}
 
-        logs = {**logs, **metrics}
+        # Update in-place so caller-visible metrics (e.g. from Trainer.evaluate) include custom entries.
+        logs.update(metrics)
         super().log(logs, start_time)
         self._metrics[mode].clear()
 

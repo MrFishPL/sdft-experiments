@@ -65,6 +65,27 @@ class LoggingMixinTest(unittest.TestCase):
         self.assertEqual(logs["eval_bar"], 3.0)
         self.assertEqual(len(trainer._metrics["eval"]), 0)
 
+    def test_log_infers_eval_mode_from_keys_even_if_model_is_training(self):
+        trainer = _DummyLoggingTrainer(training=True)
+        trainer._metrics["eval"]["tooluse_strict_match"] = [0.25, 0.75]
+
+        trainer.log({"eval_loss": 1.0})
+
+        logs, _ = trainer.logged_calls[-1]
+        self.assertEqual(logs["eval_loss"], 1.0)
+        self.assertEqual(logs["eval_tooluse_strict_match"], 0.5)
+        self.assertEqual(len(trainer._metrics["eval"]), 0)
+
+    def test_log_mutates_input_dict_for_trainer_evaluate_visibility(self):
+        trainer = _DummyLoggingTrainer(training=False)
+        trainer._metrics["eval"]["tooluse_strict_match"] = [1.0]
+        raw_logs = {"eval_loss": 0.1}
+
+        trainer.log(raw_logs)
+
+        self.assertIn("eval_tooluse_strict_match", raw_logs)
+        self.assertEqual(raw_logs["eval_tooluse_strict_match"], 1.0)
+
     def test_save_checkpoint_creates_model_card_with_output_dir_name(self):
         trainer = _DummyLoggingTrainer(training=True)
         trainer.args.hub_model_id = None
