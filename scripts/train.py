@@ -56,6 +56,12 @@ def parse_args():
     parser.add_argument("--save_steps", type=int, default=100, help="Checkpoint save cadence in steps")
     parser.add_argument("--max_prompt_length", type=int, default=1024, help="Maximum prompt length")
     parser.add_argument("--max_completion_length", type=int, default=2048, help="Maximum completion length")
+    parser.add_argument(
+        "--num_generations",
+        type=int,
+        default=8,
+        help="Number of sampled completions per prompt group (paper-faithful ToolUse setting uses 1).",
+    )
     parser.add_argument("--warmup_steps", type=int, default=10, help="Warmup steps")
     parser.add_argument("--run_name", type=str, default=None, help="WandB run name")
     parser.add_argument(
@@ -98,6 +104,7 @@ def _build_config(args: argparse.Namespace) -> DistilConfig:
         "gradient_accumulation_steps": args.num_prompts_per_batch,
         "max_prompt_length": args.max_prompt_length,
         "max_completion_length": args.max_completion_length,
+        "num_generations": args.num_generations,
         "num_train_epochs": args.num_train_epochs,
         "save_steps": args.save_steps,
         "max_grad_norm": 1,

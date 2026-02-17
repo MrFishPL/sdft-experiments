@@ -21,6 +21,7 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertEqual(args.eval_strategy, "steps")
         self.assertEqual(args.per_device_eval_batch_size, 8)
         self.assertEqual(args.max_completion_length, 2048)
+        self.assertEqual(args.num_generations, 8)
         self.assertEqual(args.warmup_steps, 10)
         self.assertTrue(args.use_vllm)
         self.assertTrue(args.paper_hparams)
@@ -47,6 +48,8 @@ class ScriptTrainTest(unittest.TestCase):
                 "25",
                 "--eval_strategy",
                 "epoch",
+                "--num_generations",
+                "1",
                 "--warmup_steps",
                 "42",
                 "--no-paper_hparams",
@@ -61,6 +64,7 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertEqual(args.seed, 7)
         self.assertEqual(args.eval_steps, 25)
         self.assertEqual(args.eval_strategy, "epoch")
+        self.assertEqual(args.num_generations, 1)
         self.assertEqual(args.warmup_steps, 42)
         self.assertFalse(args.paper_hparams)
 
@@ -79,6 +83,7 @@ class ScriptTrainTest(unittest.TestCase):
             save_steps=100,
             max_prompt_length=1024,
             max_completion_length=2048,
+            num_generations=1,
             warmup_steps=25,
             run_name="run-name",
             use_vllm=True,
@@ -132,6 +137,7 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertEqual(cfg.output_dir, "out-dir")
         self.assertEqual(cfg.eval_steps, 100)
         self.assertEqual(cfg.eval_strategy, "steps")
+        self.assertEqual(cfg.num_generations, 1)
         self.assertTrue(cfg.load_best_model_at_end)
         self.assertEqual(cfg.metric_for_best_model, "eval_tooluse_strict_match")
         self.assertTrue(cfg.greater_is_better)
