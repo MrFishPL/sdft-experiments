@@ -11,4 +11,6 @@ bsub_outputs/
 runs/
 logs/
 
-knowladge/
+knowledge/
+
+.pytest_cache
