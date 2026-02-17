@@ -35,6 +35,7 @@ from transformers.trainer_utils import seed_worker
 from transformers.utils import is_datasets_available, is_flash_attn_2_available, is_peft_available, is_rich_available
 
 from sdft.config.distil import DistilConfig
+from sdft.eval import score_tooluse_predictions
 from trl.data_utils import apply_chat_template, is_conversational, maybe_apply_chat_template, prepare_multimodal_messages
 from trl.extras.profiling import profiling_context, profiling_decorator
 from trl.import_utils import is_liger_kernel_available, is_vllm_available

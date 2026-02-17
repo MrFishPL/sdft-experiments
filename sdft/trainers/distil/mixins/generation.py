@@ -2,6 +2,16 @@ from sdft.trainers.distil._imports import *
 
 
 class GenerationMixin:
+    def _log_tooluse_eval_metrics(self, inputs: list[dict[str, Any]], completions_text: list[str], device: torch.device):
+        if not inputs or not all("golden_answer" in example for example in inputs):
+            return
+
+        references = [example.get("golden_answer", []) for example in inputs]
+        metric_lists = score_tooluse_predictions(completions_text, references)
+        for metric_name, values in metric_lists.items():
+            values_tensor = torch.tensor(values, dtype=torch.float32, device=device)
+            self._metrics["eval"][f"tooluse_{metric_name}"].append(self.accelerator.gather(values_tensor).mean().item())
+
     def _prepare_inputs(
         self, generation_batch: dict[str, Union[torch.Tensor, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
@@ -552,6 +562,9 @@ class GenerationMixin:
                 completions.append([{"role": "assistant", "content": bootstrap + completion}])
         else:
             completions = completions_text
+
+        if mode == "eval":
+            self._log_tooluse_eval_metrics(inputs=inputs, completions_text=completions_text, device=device)
         
         # Not really necessary, but keeping for now
         rewards = torch.zeros_like(completion_ids, dtype=torch.float32)
@@ -634,5 +647,3 @@ class GenerationMixin:
         if images is not None:
             output["num_images"] = num_images
         return output
-
-

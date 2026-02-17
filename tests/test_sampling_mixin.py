@@ -45,7 +45,7 @@ class SamplingMixinTest(unittest.TestCase):
         trainer = _DummySamplingTrainer()
         self.assertIsNone(trainer._signature_columns)
         trainer._set_signature_columns_if_needed()
-        self.assertEqual(trainer._signature_columns, ["prompt", "teacher_prompt", "image", "images"])
+        self.assertEqual(trainer._signature_columns, ["prompt", "teacher_prompt", "golden_answer", "image", "images"])
 
     def test_get_train_sampler_configuration(self):
         trainer = _DummySamplingTrainer()
