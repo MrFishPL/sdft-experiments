@@ -10,3 +10,5 @@ bsub_outputs/
 .venv-test
 runs/
 logs/
+
+knowladge/

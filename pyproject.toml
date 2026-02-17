@@ -7,6 +7,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "datasets==4.3.0",
     "torch==2.9.0",
+    "torchvision==0.24.0",
     "transformers==4.57.1",
     "accelerate==1.11.0",
     "peft==0.17.1",
@@ -37,3 +38,6 @@ explicit = true
 torch = { index = "pytorch-cu130" }
 torchvision = { index = "pytorch-cu130" }
 torchaudio = { index = "pytorch-cu130" }
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
