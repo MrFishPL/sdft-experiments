@@ -19,8 +19,10 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertEqual(args.ref_model_mixup_alpha, 0.02)
         self.assertEqual(args.eval_steps, 100)
         self.assertEqual(args.eval_strategy, "steps")
+        self.assertEqual(args.per_device_eval_batch_size, 8)
         self.assertEqual(args.max_completion_length, 2048)
         self.assertEqual(args.warmup_steps, 10)
+        self.assertTrue(args.use_vllm)
         self.assertTrue(args.paper_hparams)
         self.assertEqual(args.model_name, "Qwen/Qwen2.5-7B-Instruct")
         self.assertEqual(args.seed, 42)
@@ -79,6 +81,7 @@ class ScriptTrainTest(unittest.TestCase):
             max_completion_length=2048,
             warmup_steps=25,
             run_name="run-name",
+            use_vllm=True,
             paper_hparams=True,
         )
 
@@ -103,6 +106,7 @@ class ScriptTrainTest(unittest.TestCase):
             patch.object(train_script.AutoModelForCausalLM, "from_pretrained", side_effect=[student_model, teacher_model]) as model_mock,
             patch.object(train_script.AutoTokenizer, "from_pretrained", return_value=tokenizer) as tokenizer_mock,
             patch.object(train_script, "load_tooluse_dataset", return_value=(train_dataset, eval_dataset)) as data_mock,
+            patch.object(train_script, "_vllm_runtime_usable", return_value=True),
             patch.object(train_script, "DistilConfig", side_effect=lambda **kwargs: SimpleNamespace(**kwargs)) as config_mock,
             patch.object(train_script, "DistilTrainer", DummyTrainer),
         ):

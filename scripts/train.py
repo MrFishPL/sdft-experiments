@@ -14,6 +14,27 @@ from sdft.data import load_tooluse_dataset
 from sdft.trainers import DistilTrainer
 
 
+def _vllm_runtime_usable() -> bool:
+    try:
+        from trl.import_utils import is_vllm_available
+    except Exception:
+        return False
+
+    if not is_vllm_available():
+        return False
+
+    try:
+        from trl.extras.vllm_client import VLLMClient  # noqa: F401
+        from vllm import LLM, SamplingParams  # noqa: F401
+    except Exception as exc:  # pragma: no cover - host/runtime specific
+        print(
+            f"[train.py] vLLM unavailable on this host ({exc}); falling back to use_vllm=False.",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Distil Trainer")
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate")
@@ -31,12 +52,18 @@ def parse_args():
         choices=["no", "steps", "epoch"],
         help="Evaluation scheduling strategy",
     )
-    parser.add_argument("--per_device_eval_batch_size", type=int, default=1, help="Eval micro-batch size")
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=8, help="Eval micro-batch size")
     parser.add_argument("--save_steps", type=int, default=100, help="Checkpoint save cadence in steps")
     parser.add_argument("--max_prompt_length", type=int, default=1024, help="Maximum prompt length")
     parser.add_argument("--max_completion_length", type=int, default=2048, help="Maximum completion length")
     parser.add_argument("--warmup_steps", type=int, default=10, help="Warmup steps")
     parser.add_argument("--run_name", type=str, default=None, help="WandB run name")
+    parser.add_argument(
+        "--use_vllm",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use vLLM for generation when runtime linkage is available.",
+    )
     parser.add_argument(
         "--paper_hparams",
         action=argparse.BooleanOptionalAction,
@@ -48,10 +75,11 @@ def parse_args():
 
 def _build_config(args: argparse.Namespace) -> DistilConfig:
     do_eval = args.eval_strategy != "no"
+    use_vllm = args.use_vllm and _vllm_runtime_usable()
 
     config_kwargs = {
         "seed": args.seed,
-        "use_vllm": True,
+        "use_vllm": use_vllm,
         "vllm_mode": "colocate",
         "vllm_tensor_parallel_size": 1,
         "vllm_gpu_memory_utilization": 0.3,
@@ -61,6 +89,8 @@ def _build_config(args: argparse.Namespace) -> DistilConfig:
         "lr_scheduler_type": "cosine",
         "logging_strategy": "steps",
         "logging_steps": 1,
+        "logging_first_step": True,
+        "disable_tqdm": False,
         "bf16": True,
         "fp16": False,
         "per_device_train_batch_size": 1,

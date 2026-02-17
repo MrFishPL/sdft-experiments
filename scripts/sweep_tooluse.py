@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+import os
 import subprocess
 from datetime import datetime
 from itertools import product
@@ -16,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval_steps", type=int, default=100)
     parser.add_argument("--eval_strategy", type=str, default="steps", choices=["no", "steps", "epoch"])
     parser.add_argument("--save_steps", type=int, default=100)
-    parser.add_argument("--per_device_eval_batch_size", type=int, default=1)
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=8)
     parser.add_argument("--max_prompt_length", type=int, default=1024)
     parser.add_argument("--max_completion_length", type=int, default=2048)
     parser.add_argument("--warmup_steps", type=int, default=10)
@@ -94,7 +95,9 @@ def run_one_config(config: dict[str, Any], args: argparse.Namespace, run_index: 
     ]
 
     with log_path.open("w", encoding="utf-8") as log_file:
-        proc = subprocess.run(command, stdout=log_file, stderr=subprocess.STDOUT, check=False)
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        proc = subprocess.run(command, stdout=log_file, stderr=subprocess.STDOUT, check=False, env=env)
 
     result: dict[str, Any] = {
         "run_index": run_index,
