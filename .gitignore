@@ -7,3 +7,4 @@ wandb/
 results/
 bsub_outputs/
 .hyperparameter_search_scripts_main/
+.venv-test

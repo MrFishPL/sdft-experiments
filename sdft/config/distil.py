@@ -489,6 +489,12 @@ class DistilConfig(TrainingArguments):
             "help": "Alpha coefficient. If `0.0` (default), the forward KL is used. If `1.0`, the reverse KL is used. If anything in between, the Jensen-Shannon Divergence is used."
         },
     )
+    full_logit_distillation: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to compute distillation on the full output logit distribution."
+        },
+    )
     generate_from_teacher: bool = field(
         default=False,
         metadata={
@@ -608,6 +614,10 @@ class DistilConfig(TrainingArguments):
             "recommends a value of `0.2`. If used with `mask_truncated_completions=True`, only tokens from "
             "non-truncated completions are considered."
         },
+    )
+    use_liger_loss: bool = field(
+        default=False,
+        metadata={"help": "Whether to use the Liger GRPO loss."},
     )
     num_loss_tokens_to_skip: int = field(
         default=0,
