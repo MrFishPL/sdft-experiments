@@ -18,14 +18,14 @@ if [ "${NUM_GPUS}" -gt 1 ]; then DIST_FLAGS="--multi_gpu"; else DIST_FLAGS=""; f
 HF_HUB_ENABLE_HF_TRANSFER=0 CUDA_VISIBLE_DEVICES="${CUDA_DEVICES}" PYTHONUNBUFFERED=1 \
 uv run accelerate launch --num_processes "${NUM_GPUS}" ${DIST_FLAGS} -m scripts.train \
   --output_dir "${RUN_DIR}" \
-  --model_name Qwen/Qwen2.5-7B-Instruct \
+  --model_name Qwen/Qwen2.5-3B-Instruct \
   --seed 42 \
   --learning_rate 1e-5 \
-  --num_train_epochs 2 \
+  --num_train_epochs 1 \
   --per_device_train_batch_size "${DEVICE_BS}" \
   --gradient_accumulation_steps "${ACCUM_STEPS}" \
   --ref_model_mixup_alpha 0.02 \
-  --eval_steps 100 \
+  --eval_steps 20 \
   --eval_strategy steps \
   --per_device_eval_batch_size 8 \
   --save_steps 100 \
