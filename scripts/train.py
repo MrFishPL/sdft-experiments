@@ -40,6 +40,13 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate")
     parser.add_argument("--num_train_epochs", type=int, default=2, help="Number of training epochs")
     parser.add_argument("--num_prompts_per_batch", type=int, default=32, help="Number of prompts per batch")
+    parser.add_argument("--per_device_train_batch_size", type=int, default=1, help="Per-device train micro-batch size")
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=None,
+        help="Gradient accumulation steps. Overrides --num_prompts_per_batch when set.",
+    )
     parser.add_argument("--ref_model_mixup_alpha", type=float, default=0.02, help="Reference model mixup alpha")
     parser.add_argument("--output_dir", type=str, default="runs/tooluse", help="Output directory")
     parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-7B-Instruct", help="Model name")
@@ -59,8 +66,8 @@ def parse_args():
     parser.add_argument(
         "--num_generations",
         type=int,
-        default=8,
-        help="Number of sampled completions per prompt group (paper-faithful ToolUse setting uses 1).",
+        default=1,
+        help="Number of sampled completions per prompt group.",
     )
     parser.add_argument("--warmup_steps", type=int, default=10, help="Warmup steps")
     parser.add_argument("--run_name", type=str, default=None, help="WandB run name")
@@ -82,6 +89,15 @@ def parse_args():
 def _build_config(args: argparse.Namespace) -> DistilConfig:
     do_eval = args.eval_strategy != "no"
     use_vllm = args.use_vllm and _vllm_runtime_usable()
+    gradient_accumulation_steps = (
+        args.gradient_accumulation_steps
+        if args.gradient_accumulation_steps is not None
+        else args.num_prompts_per_batch
+    )
+    if args.per_device_train_batch_size <= 0:
+        raise ValueError("per_device_train_batch_size must be >= 1")
+    if gradient_accumulation_steps <= 0:
+        raise ValueError("gradient_accumulation_steps must be >= 1")
 
     config_kwargs = {
         "seed": args.seed,
@@ -99,9 +115,9 @@ def _build_config(args: argparse.Namespace) -> DistilConfig:
         "disable_tqdm": False,
         "bf16": True,
         "fp16": False,
-        "per_device_train_batch_size": 1,
+        "per_device_train_batch_size": args.per_device_train_batch_size,
         "per_device_eval_batch_size": args.per_device_eval_batch_size,
-        "gradient_accumulation_steps": args.num_prompts_per_batch,
+        "gradient_accumulation_steps": gradient_accumulation_steps,
         "max_prompt_length": args.max_prompt_length,
         "max_completion_length": args.max_completion_length,
         "num_generations": args.num_generations,

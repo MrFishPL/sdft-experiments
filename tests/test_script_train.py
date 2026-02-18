@@ -16,12 +16,14 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertEqual(args.learning_rate, 1e-5)
         self.assertEqual(args.num_train_epochs, 2)
         self.assertEqual(args.num_prompts_per_batch, 32)
+        self.assertEqual(args.per_device_train_batch_size, 1)
+        self.assertIsNone(args.gradient_accumulation_steps)
         self.assertEqual(args.ref_model_mixup_alpha, 0.02)
         self.assertEqual(args.eval_steps, 100)
         self.assertEqual(args.eval_strategy, "steps")
         self.assertEqual(args.per_device_eval_batch_size, 8)
         self.assertEqual(args.max_completion_length, 2048)
-        self.assertEqual(args.num_generations, 8)
+        self.assertEqual(args.num_generations, 1)
         self.assertEqual(args.warmup_steps, 10)
         self.assertTrue(args.use_vllm)
         self.assertTrue(args.paper_hparams)
@@ -40,6 +42,10 @@ class ScriptTrainTest(unittest.TestCase):
                 "3",
                 "--num_prompts_per_batch",
                 "8",
+                "--per_device_train_batch_size",
+                "2",
+                "--gradient_accumulation_steps",
+                "6",
                 "--model_name",
                 "tiny-model",
                 "--seed",
@@ -60,6 +66,8 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertEqual(args.learning_rate, 1e-4)
         self.assertEqual(args.num_train_epochs, 3)
         self.assertEqual(args.num_prompts_per_batch, 8)
+        self.assertEqual(args.per_device_train_batch_size, 2)
+        self.assertEqual(args.gradient_accumulation_steps, 6)
         self.assertEqual(args.model_name, "tiny-model")
         self.assertEqual(args.seed, 7)
         self.assertEqual(args.eval_steps, 25)
@@ -73,6 +81,8 @@ class ScriptTrainTest(unittest.TestCase):
             learning_rate=1e-5,
             num_train_epochs=2,
             num_prompts_per_batch=4,
+            per_device_train_batch_size=2,
+            gradient_accumulation_steps=3,
             ref_model_mixup_alpha=0.2,
             output_dir="out-dir",
             model_name="dummy-model",
@@ -138,6 +148,8 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertEqual(cfg.eval_steps, 100)
         self.assertEqual(cfg.eval_strategy, "steps")
         self.assertEqual(cfg.num_generations, 1)
+        self.assertEqual(cfg.per_device_train_batch_size, 2)
+        self.assertEqual(cfg.gradient_accumulation_steps, 3)
         self.assertTrue(cfg.load_best_model_at_end)
         self.assertEqual(cfg.metric_for_best_model, "eval_tooluse_strict_match")
         self.assertTrue(cfg.greater_is_better)
