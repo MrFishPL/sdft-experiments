@@ -203,12 +203,15 @@ class DistilTrainer(
         self._metrics = {"train": defaultdict(list), "eval": defaultdict(list)}
         self._total_train_tokens = 0
         self.log_completions = args.log_completions
+        self.log_examples_eval_only = args.log_examples_eval_only
         self.wandb_log_unique_prompts = args.wandb_log_unique_prompts
         self.num_completions_to_print = args.num_completions_to_print
         # Keep logs sized to the generation batch to record only outputs from the latest model update.
         self._logs = {
             "images": deque(maxlen=args.generation_batch_size),
             "prompt": deque(maxlen=args.generation_batch_size),
+            "student_input": deque(maxlen=args.generation_batch_size),
+            "teacher_input": deque(maxlen=args.generation_batch_size),
             "completion": deque(maxlen=args.generation_batch_size),
             "rewards": defaultdict(lambda: deque(maxlen=args.generation_batch_size)),
             "advantages": deque(maxlen=args.generation_batch_size),

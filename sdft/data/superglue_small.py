@@ -102,6 +102,37 @@ def _render_demonstration(task: str, example: dict, label_name: str) -> str:
     raise ValueError(f"Unsupported task '{task}'.")
 
 
+def _render_gold_completion(task: str, example: dict, label_name: str) -> str:
+    if task == "copa":
+        selected_choice = example["choice1"] if label_name == "choice1" else example["choice2"]
+        return (
+            "Reasoning: The correct option should best satisfy the requested causal relation.\n"
+            f"Reasoning: The better choice in this case is: {selected_choice}\n"
+            f"Final Label: {label_name}"
+        )
+
+    if task == "cb":
+        return (
+            "Reasoning: Compare the hypothesis to the premise and determine entailment, contradiction, or neutrality.\n"
+            f"Reasoning: The best label is {label_name}.\n"
+            f"Final Label: {label_name}"
+        )
+
+    if task == "wsc":
+        relation = "does" if label_name == "True" else "does not"
+        return (
+            "Reasoning: Resolve whether span2 co-refers to span1 based on sentence context.\n"
+            f"Reasoning: In this sentence, span2 {relation} refer to span1.\n"
+            f"Final Label: {label_name}"
+        )
+
+    raise ValueError(f"Unsupported task '{task}'.")
+
+
+def _build_teacher_prompt(prompt_text: str, output_text: str) -> str:
+    return _TEACHER_PROMPT_TEMPLATE.substitute(prompt_text=prompt_text, output_text=output_text)
+
+
 def load_superglue_small_dataset(task: str, seed: int = 42) -> tuple[Dataset, Dataset]:
     """Load and format low-data SuperGLUE tasks (COPA, CB, WSC) for SDFT."""
     normalized_task = _normalize_task(task)
@@ -112,7 +143,7 @@ def load_superglue_small_dataset(task: str, seed: int = 42) -> tuple[Dataset, Da
     def format_train_example(example: dict) -> dict:
         prompt_text = _render_student_prompt(normalized_task, example)
         label_name = _label_name(normalized_task, int(example["label"]))
-        teacher_prompt_text = _TEACHER_PROMPT_TEMPLATE.substitute(
+        teacher_prompt_text = _build_teacher_prompt(
             prompt_text=prompt_text,
             output_text=_render_demonstration(normalized_task, example, label_name),
         )
@@ -125,6 +156,40 @@ def load_superglue_small_dataset(task: str, seed: int = 42) -> tuple[Dataset, Da
         formatted = format_train_example(example)
         formatted["eval_label"] = _label_name(normalized_task, int(example["label"]))
         formatted["eval_task"] = normalized_task
+        return formatted
+
+    train_dataset = train_dataset.map(format_train_example, remove_columns=train_dataset.column_names)
+    train_dataset = train_dataset.shuffle(seed=seed)
+    eval_dataset = eval_dataset.map(format_eval_example, remove_columns=eval_dataset.column_names)
+    return train_dataset, eval_dataset
+
+
+def load_superglue_small_sft_dataset(task: str, seed: int = 42) -> tuple[Dataset, Dataset]:
+    """Load and format low-data SuperGLUE tasks (COPA, CB, WSC) for SFT."""
+    normalized_task = _normalize_task(task)
+    raw_dataset = load_dataset("super_glue", normalized_task)
+    train_dataset = raw_dataset["train"]
+    eval_dataset = raw_dataset["validation"]
+
+    def format_train_example(example: dict) -> dict:
+        prompt_text = _render_student_prompt(normalized_task, example)
+        label_name = _label_name(normalized_task, int(example["label"]))
+        completion_text = _render_gold_completion(normalized_task, example, label_name)
+        teacher_prompt_text = _build_teacher_prompt(prompt_text=prompt_text, output_text=completion_text)
+        return {
+            "prompt": prompt_text,
+            "completion": completion_text,
+            "teacher_prompt": teacher_prompt_text,
+        }
+
+    def format_eval_example(example: dict) -> dict:
+        formatted = format_train_example(example)
+        formatted.update(
+            {
+                "eval_label": _label_name(normalized_task, int(example["label"])),
+                "eval_task": normalized_task,
+            }
+        )
         return formatted
 
     train_dataset = train_dataset.map(format_train_example, remove_columns=train_dataset.column_names)

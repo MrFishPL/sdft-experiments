@@ -30,6 +30,7 @@ class _DummySamplingTrainer(SamplingMixin):
             dataloader_prefetch_factor=None,
             process_index=0,
             generation_batch_size=8,
+            eval_num_generations=1,
             seed=123,
         )
 
@@ -65,7 +66,7 @@ class SamplingMixinTest(unittest.TestCase):
         sampler = trainer._get_eval_sampler(eval_dataset=list(range(4)))
 
         self.assertIsInstance(sampler, RepeatSampler)
-        self.assertEqual(sampler.mini_repeat_count, 2)
+        self.assertEqual(sampler.mini_repeat_count, 1)
         self.assertEqual(sampler.seed, 123)
 
     def test_train_dataloader_uses_generation_batch_size(self):

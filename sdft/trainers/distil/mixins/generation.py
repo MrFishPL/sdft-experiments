@@ -121,6 +121,17 @@ class GenerationMixin:
 
     def _generate_single_turn(self, prompts: list[str], images: Optional[list]):
         device = self.accelerator.device
+        mode = "train" if self.model.training else "eval"
+        generation_repeat = self.num_generations if mode == "train" else self.args.eval_num_generations
+        deterministic_eval = mode == "eval" and self.args.eval_deterministic
+        vllm_temperature = 0.0 if deterministic_eval else self.temperature
+        vllm_top_p = 1.0 if deterministic_eval else self.top_p
+        vllm_top_k = -1 if deterministic_eval else (-1 if self.top_k is None else self.top_k)
+        vllm_min_p = 0.0 if deterministic_eval else (0.0 if self.min_p is None else self.min_p)
+        generation_config = self.generation_config
+        if deterministic_eval:
+            generation_config = GenerationConfig.from_dict(self.generation_config.to_dict())
+            generation_config.do_sample = False
 
         # If the prompts are conversational and the inputs contain images, we need to convert the prompts from
         # [{"role": "user", "content": "What color is the sky?"}] to
@@ -171,10 +182,10 @@ class GenerationMixin:
                     # Since 'prompts' contains 'num_generations' duplicates, we first take unique prompts, and generate
                     # num_generations outputs for each one. This is faster than generating outputs for each duplicate
                     # prompt individually.
-                    ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
+                    ordered_set_of_prompts = all_prompts_text[::generation_repeat]
 
                     if images is not None:
-                        ordered_set_of_images = all_images[:: self.num_generations]
+                        ordered_set_of_images = all_images[::generation_repeat]
                     else:
                         ordered_set_of_images = None
 
@@ -182,12 +193,12 @@ class GenerationMixin:
                         output = self.vllm_client.generate(
                             prompts=ordered_set_of_prompts,
                             images=ordered_set_of_images,
-                            n=self.num_generations,
+                            n=generation_repeat,
                             repetition_penalty=self.repetition_penalty,
-                            temperature=self.temperature,
-                            top_p=self.top_p,
-                            top_k=-1 if self.top_k is None else self.top_k,
-                            min_p=0.0 if self.min_p is None else self.min_p,
+                            temperature=vllm_temperature,
+                            top_p=vllm_top_p,
+                            top_k=vllm_top_k,
+                            min_p=vllm_min_p,
                             max_tokens=self.max_completion_length,
                             truncate_prompt_tokens=self.max_prompt_length,
                             generation_kwargs=self.args.generation_kwargs,
@@ -202,7 +213,7 @@ class GenerationMixin:
                 all_prompt_ids, all_completion_ids, all_logprobs = obj_list[0]
 
                 # At this point, we only get 1 copy of each prompt, so we need to repeat them num_generations times
-                all_prompt_ids = [ids for ids in all_prompt_ids for _ in range(self.num_generations)]
+                all_prompt_ids = [ids for ids in all_prompt_ids for _ in range(generation_repeat)]
 
                 process_slice = slice(
                     self.accelerator.process_index * len(prompts),
@@ -217,10 +228,10 @@ class GenerationMixin:
                 generation_kwargs = {
                     "n": 1,  # vLLM on each GPU generates only 1 in colocate mode
                     "repetition_penalty": self.repetition_penalty,
-                    "temperature": self.temperature,
-                    "top_p": self.top_p,
-                    "top_k": -1 if self.top_k is None else self.top_k,
-                    "min_p": 0.0 if self.min_p is None else self.min_p,
+                    "temperature": vllm_temperature,
+                    "top_p": vllm_top_p,
+                    "top_k": vllm_top_k,
+                    "min_p": vllm_min_p,
                     "max_tokens": self.max_completion_length,
                     "truncate_prompt_tokens": self.max_prompt_length,
                     "logprobs": 0,  # only return the logprob of the generated token
@@ -307,7 +318,7 @@ class GenerationMixin:
                     unwrapped_model.to(torch.float16)
                 with torch.inference_mode():
                     all_outputs = unwrapped_model.generate_batch(
-                        paged_prompt_inputs.input_ids, generation_config=self.generation_config, progress_bar=False
+                        paged_prompt_inputs.input_ids, generation_config=generation_config, progress_bar=False
                     )
                     unwrapped_model.train()  # restore training mode, as generate_batch forces eval mode
             completion_ids = [output.generated_tokens for output in all_outputs.values()]
@@ -339,7 +350,7 @@ class GenerationMixin:
                 FSDP.summon_full_params(self.model_wrapped, recurse=False) if self.is_fsdp_enabled else nullcontext(),
             ):
                 prompt_completion_ids = unwrapped_model.generate(
-                    **generate_inputs, generation_config=self.generation_config, disable_compile=True
+                    **generate_inputs, generation_config=generation_config, disable_compile=True
                 )
             # Compute prompt length and extract completion ids
             prompt_ids, prompt_mask = generate_inputs["input_ids"], generate_inputs["attention_mask"]
@@ -571,7 +582,8 @@ class GenerationMixin:
                 ref_per_token_logps = None
 
         # Decode
-        prompts_text = self.processing_class.batch_decode(prompt_ids, skip_special_tokens=True)
+        student_inputs_text = self.processing_class.batch_decode(prompt_ids, skip_special_tokens=True)
+        teacher_inputs_text = self.processing_class.batch_decode(teacher_prompt_ids, skip_special_tokens=True)
         completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
         if is_conversational(inputs[0]):
             completions = []
@@ -593,7 +605,9 @@ class GenerationMixin:
         all_process_advantages = advantages.clone()
 
         # Log prompt and completion texts
-        self._logs["prompt"].extend(gather_object(prompts_text))
+        self._logs["prompt"].extend(gather_object(student_inputs_text))
+        self._logs["student_input"].extend(gather_object(student_inputs_text))
+        self._logs["teacher_input"].extend(gather_object(teacher_inputs_text))
         self._logs["completion"].extend(gather_object(completions_text))
         self._logs["rewards"]["main"].extend(gather_object(rewards.mean(dim=-1).tolist()))
         self._logs["advantages"].extend(gather_object(all_process_advantages.mean(dim=-1).tolist()))

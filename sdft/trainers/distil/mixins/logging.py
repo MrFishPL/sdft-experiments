@@ -16,7 +16,11 @@ class LoggingMixin:
         super().log(logs, start_time)
         self._metrics[mode].clear()
 
-        if self.accelerator.is_main_process and self.log_completions:
+        should_log_examples = self.accelerator.is_main_process and self.log_completions
+        if should_log_examples and getattr(self, "log_examples_eval_only", True) and mode != "eval":
+            should_log_examples = False
+
+        if should_log_examples:
             if is_rich_available():
                 print_prompt_completions_sample(
                     self._logs["prompt"],
@@ -33,6 +37,8 @@ class LoggingMixin:
                 table = {
                     "step": [str(self.state.global_step)] * len(self._logs["prompt"]),
                     "prompt": self._logs["prompt"],
+                    "student_input": self._logs.get("student_input", self._logs["prompt"]),
+                    "teacher_input": self._logs.get("teacher_input", self._logs["prompt"]),
                     "completion": self._logs["completion"],
                     **self._logs["rewards"],
                     "advantage": self._logs["advantages"],

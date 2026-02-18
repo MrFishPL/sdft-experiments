@@ -4,14 +4,15 @@ from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from trl import SFTConfig
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from sdft.config import DistilConfig
-from sdft.data import load_superglue_small_dataset, load_tooluse_dataset
-from sdft.trainers import DistilTrainer
+from sdft.data import load_superglue_small_dataset, load_superglue_small_sft_dataset, load_tooluse_dataset
+from sdft.trainers import DistilTrainer, SmallDataSFTTrainer
 
 
 def _vllm_runtime_usable() -> bool:
@@ -36,7 +37,14 @@ def _vllm_runtime_usable() -> bool:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Distil Trainer")
+    parser = argparse.ArgumentParser(description="SDFT/SFT Trainer")
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="sdft",
+        choices=["sdft", "sft"],
+        help="Training method: self-distillation (sdft) or classic supervised fine-tuning (sft).",
+    )
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate")
     parser.add_argument("--num_train_epochs", type=int, default=2, help="Number of training epochs")
     parser.add_argument("--num_prompts_per_batch", type=int, default=32, help="Number of prompts per batch")
@@ -76,13 +84,50 @@ def parse_args():
         default=1,
         help="Number of sampled completions per prompt group.",
     )
+    parser.add_argument(
+        "--eval_num_generations",
+        type=int,
+        default=1,
+        help="Number of sampled completions per prompt group during evaluation.",
+    )
     parser.add_argument("--warmup_steps", type=int, default=10, help="Warmup steps")
+    parser.add_argument("--max_steps", type=int, default=-1, help="Maximum training steps (overrides epochs when > 0)")
     parser.add_argument("--run_name", type=str, default=None, help="WandB run name")
     parser.add_argument(
         "--use_vllm",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Use vLLM for generation when runtime linkage is available.",
+    )
+    parser.add_argument(
+        "--eval_deterministic",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use deterministic decoding for evaluation generations.",
+    )
+    parser.add_argument(
+        "--eval_before_train",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run one evaluation pass before training starts.",
+    )
+    parser.add_argument(
+        "--final_eval",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run one evaluation pass after training completes.",
+    )
+    parser.add_argument(
+        "--log_input_examples",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Log input/completion examples to W&B. Defaults to True for low-data tasks.",
+    )
+    parser.add_argument(
+        "--log_examples_eval_only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="If true, log examples only on evaluation events.",
     )
     parser.add_argument(
         "--paper_hparams",
@@ -93,9 +138,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def _build_config(args: argparse.Namespace) -> DistilConfig:
-    do_eval = args.eval_strategy != "no"
-    use_vllm = args.use_vllm and _vllm_runtime_usable()
+def _resolve_gradient_accumulation_steps(args: argparse.Namespace) -> int:
     gradient_accumulation_steps = (
         args.gradient_accumulation_steps
         if args.gradient_accumulation_steps is not None
@@ -105,6 +148,20 @@ def _build_config(args: argparse.Namespace) -> DistilConfig:
         raise ValueError("per_device_train_batch_size must be >= 1")
     if gradient_accumulation_steps <= 0:
         raise ValueError("gradient_accumulation_steps must be >= 1")
+    return gradient_accumulation_steps
+
+
+def _resolve_log_input_examples(args: argparse.Namespace) -> bool:
+    if args.log_input_examples is not None:
+        return args.log_input_examples
+    return args.task in {"copa", "cb", "wsc"}
+
+
+def _build_distil_config(args: argparse.Namespace) -> DistilConfig:
+    do_eval = args.eval_strategy != "no"
+    use_vllm = args.use_vllm and _vllm_runtime_usable()
+    gradient_accumulation_steps = _resolve_gradient_accumulation_steps(args)
+    log_input_examples = _resolve_log_input_examples(args)
 
     config_kwargs = {
         "seed": args.seed,
@@ -128,7 +185,10 @@ def _build_config(args: argparse.Namespace) -> DistilConfig:
         "max_prompt_length": args.max_prompt_length,
         "max_completion_length": args.max_completion_length,
         "num_generations": args.num_generations,
+        "eval_num_generations": args.eval_num_generations,
+        "eval_deterministic": args.eval_deterministic,
         "num_train_epochs": args.num_train_epochs,
+        "max_steps": args.max_steps,
         "save_steps": args.save_steps,
         "max_grad_norm": 1,
         "weight_decay": 0.0,
@@ -136,7 +196,8 @@ def _build_config(args: argparse.Namespace) -> DistilConfig:
         "report_to": "wandb",
         "run_name": args.run_name,
         "output_dir": args.output_dir,
-        "log_completions": False,
+        "log_completions": log_input_examples,
+        "log_examples_eval_only": args.log_examples_eval_only,
         "sync_ref_model": True,
         "ref_model_sync_steps": 1,
         "ref_model_mixup_alpha": args.ref_model_mixup_alpha,
@@ -176,35 +237,121 @@ def _build_config(args: argparse.Namespace) -> DistilConfig:
     return DistilConfig(**config_kwargs)
 
 
+def _build_sft_config(args: argparse.Namespace) -> SFTConfig:
+    do_eval = args.eval_strategy != "no"
+    gradient_accumulation_steps = _resolve_gradient_accumulation_steps(args)
+    config_kwargs = {
+        "seed": args.seed,
+        "learning_rate": args.learning_rate,
+        "warmup_steps": args.warmup_steps,
+        "lr_scheduler_type": "cosine",
+        "logging_strategy": "steps",
+        "logging_steps": 1,
+        "logging_first_step": True,
+        "bf16": True,
+        "fp16": False,
+        "per_device_train_batch_size": args.per_device_train_batch_size,
+        "per_device_eval_batch_size": args.per_device_eval_batch_size,
+        "gradient_accumulation_steps": gradient_accumulation_steps,
+        "num_train_epochs": args.num_train_epochs,
+        "max_steps": args.max_steps,
+        "save_steps": args.save_steps,
+        "max_grad_norm": 1,
+        "weight_decay": 0.0,
+        "optim": "adamw_torch",
+        "report_to": "wandb",
+        "run_name": args.run_name,
+        "output_dir": args.output_dir,
+        "do_eval": do_eval,
+        "eval_strategy": args.eval_strategy,
+        "packing": False,
+        "completion_only_loss": True,
+        "max_length": args.max_prompt_length + args.max_completion_length,
+    }
+
+    if do_eval:
+        config_kwargs.update(
+            {
+                "eval_steps": args.eval_steps,
+                "save_strategy": args.eval_strategy,
+                "load_best_model_at_end": True,
+                "metric_for_best_model": "eval_small_data_accuracy",
+                "greater_is_better": True,
+            }
+        )
+
+    if args.paper_hparams:
+        config_kwargs.update(
+            {
+                "lr_scheduler_type": "cosine",
+                "warmup_steps": 10,
+                "max_grad_norm": 1,
+                "weight_decay": 0.0,
+                "bf16": True,
+                "optim": "adamw_torch",
+            }
+        )
+
+    return SFTConfig(**config_kwargs)
+
+
 def main() -> None:
     args = parse_args()
+    if args.method == "sft" and args.task == "tooluse":
+        raise ValueError("method=sft is only supported for low-data tasks: copa, cb, wsc.")
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         torch_dtype=torch.bfloat16,
     )
-    teacher_model = AutoModelForCausalLM.from_pretrained(
-        args.model_name,
-        torch_dtype=torch.bfloat16,
-    )
+    teacher_model = None
+    if args.method == "sdft":
+        teacher_model = AutoModelForCausalLM.from_pretrained(
+            args.model_name,
+            torch_dtype=torch.bfloat16,
+        )
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    if args.task == "tooluse":
-        train_dataset, eval_dataset = load_tooluse_dataset(args.seed)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    if args.method == "sft":
+        train_dataset, eval_dataset = load_superglue_small_sft_dataset(task=args.task, seed=args.seed)
     else:
-        train_dataset, eval_dataset = load_superglue_small_dataset(task=args.task, seed=args.seed)
+        if args.task == "tooluse":
+            train_dataset, eval_dataset = load_tooluse_dataset(args.seed)
+        else:
+            train_dataset, eval_dataset = load_superglue_small_dataset(task=args.task, seed=args.seed)
 
-    config = _build_config(args)
-    trainer = DistilTrainer(
-        model=model,
-        ref_model=teacher_model,
-        args=config,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        processing_class=tokenizer,
-    )
-    if config.do_eval and eval_dataset is not None:
+    if args.method == "sft":
+        config = _build_sft_config(args)
+        trainer = SmallDataSFTTrainer(
+            model=model,
+            args=config,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            raw_eval_dataset=eval_dataset,
+            processing_class=tokenizer,
+            eval_deterministic=args.eval_deterministic,
+            log_input_examples=_resolve_log_input_examples(args),
+            log_examples_eval_only=args.log_examples_eval_only,
+            max_prompt_length=args.max_prompt_length,
+            max_completion_length=args.max_completion_length,
+        )
+    else:
+        config = _build_distil_config(args)
+        trainer = DistilTrainer(
+            model=model,
+            ref_model=teacher_model,
+            args=config,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            processing_class=tokenizer,
+        )
+
+    if config.do_eval and args.eval_before_train and eval_dataset is not None:
         trainer.evaluate()
     trainer.train()
+    if config.do_eval and args.final_eval and eval_dataset is not None:
+        trainer.evaluate()
 
 
 if __name__ == "__main__":

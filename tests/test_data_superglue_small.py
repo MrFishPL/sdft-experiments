@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from datasets import Dataset, DatasetDict
 
-from sdft.data import load_superglue_small_dataset
+from sdft.data import load_superglue_small_dataset, load_superglue_small_sft_dataset
 
 
 def _build_mock_superglue_dataset(task: str) -> DatasetDict:
@@ -135,6 +135,36 @@ class SuperGlueSmallDataTest(unittest.TestCase):
                     _, eval_dataset = load_superglue_small_dataset(task=task, seed=123)
                     labels = {row["eval_label"] for row in eval_dataset}
                     self.assertTrue(labels.issubset(label_set))
+
+    def test_sft_dataset_schema(self):
+        with patch(
+            "sdft.data.superglue_small.load_dataset",
+            side_effect=lambda name, task: _build_mock_superglue_dataset(task),
+        ):
+            train_dataset, eval_dataset = load_superglue_small_sft_dataset(task="wsc", seed=42)
+            self.assertGreater(len(train_dataset), 0)
+            self.assertGreater(len(eval_dataset), 0)
+
+            train_row = train_dataset[0]
+            self.assertEqual(
+                set(train_row.keys()),
+                {"prompt", "completion", "teacher_prompt"},
+            )
+            self.assertIn("Final Label:", train_row["completion"])
+            eval_row = eval_dataset[0]
+            self.assertEqual(set(eval_row.keys()), {"prompt", "completion", "teacher_prompt", "eval_label", "eval_task"})
+            self.assertEqual(eval_row["eval_task"], "wsc")
+
+    def test_sft_shuffle_is_deterministic_for_same_seed(self):
+        with patch(
+            "sdft.data.superglue_small.load_dataset",
+            side_effect=lambda name, task: _build_mock_superglue_dataset(task),
+        ):
+            ds_a, _ = load_superglue_small_sft_dataset(task="copa", seed=42)
+            ds_b, _ = load_superglue_small_sft_dataset(task="copa", seed=42)
+            order_a = [row["prompt"] for row in ds_a]
+            order_b = [row["prompt"] for row in ds_b]
+            self.assertEqual(order_a, order_b)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,200 @@
+import re
+from typing import Any, Optional
+
+import torch
+from trl import SFTTrainer
+
+from sdft.eval import score_small_data_predictions
+
+try:
+    import wandb
+except Exception:  # pragma: no cover - optional dependency at runtime
+    wandb = None
+
+_TASK_LABELS = {
+    "copa": ["choice1", "choice2"],
+    "cb": ["entailment", "contradiction", "neutral"],
+    "wsc": ["True", "False"],
+}
+_FINAL_LABEL_PATTERN = re.compile(r"final\s*label\s*:\s*([^\n\r]+)", re.IGNORECASE)
+_NON_ALNUM_PATTERN = re.compile(r"[^a-z0-9_ ]+")
+
+
+def _normalize_task(task: str) -> str:
+    normalized = task.strip().lower()
+    if normalized not in _TASK_LABELS:
+        raise ValueError(f"Unsupported task '{task}'. Expected one of: {sorted(_TASK_LABELS)}")
+    return normalized
+
+
+def _normalize_label(task: str, raw_text: str) -> str | None:
+    cleaned = _NON_ALNUM_PATTERN.sub(" ", raw_text.strip().lower())
+    cleaned = " ".join(cleaned.split())
+    if not cleaned:
+        return None
+
+    for label in _TASK_LABELS[task]:
+        label_lower = label.lower()
+        if cleaned == label_lower:
+            return label
+        if cleaned.startswith(label_lower + " "):
+            return label
+    return None
+
+
+def _parse_prediction_label(prediction: str, task: str) -> str | None:
+    for candidate in reversed(_FINAL_LABEL_PATTERN.findall(prediction)):
+        normalized = _normalize_label(task, candidate)
+        if normalized is not None:
+            return normalized
+
+    prediction_lower = prediction.lower()
+    earliest_pos = None
+    earliest_label = None
+    for label in _TASK_LABELS[task]:
+        label_lower = label.lower()
+        pattern = re.compile(rf"(?<![a-z0-9_]){re.escape(label_lower)}(?![a-z0-9_])")
+        match = pattern.search(prediction_lower)
+        if match is None:
+            continue
+        if earliest_pos is None or match.start() < earliest_pos:
+            earliest_pos = match.start()
+            earliest_label = label
+    return earliest_label
+
+
+class SmallDataSFTTrainer(SFTTrainer):
+    """SFT trainer wrapper that adds deterministic small-data evaluation metrics."""
+
+    def __init__(
+        self,
+        *args: Any,
+        raw_eval_dataset=None,
+        eval_deterministic: bool = True,
+        log_input_examples: bool = True,
+        log_examples_eval_only: bool = True,
+        max_prompt_length: int = 1024,
+        max_completion_length: int = 128,
+        **kwargs: Any,
+    ):
+        self.raw_eval_dataset = raw_eval_dataset
+        self.eval_deterministic = eval_deterministic
+        self.log_input_examples = log_input_examples
+        self.log_examples_eval_only = log_examples_eval_only
+        self.max_prompt_length = max_prompt_length
+        self.max_completion_length = max_completion_length
+        super().__init__(*args, **kwargs)
+
+    def _generate_eval_predictions(self) -> list[str]:
+        if self.raw_eval_dataset is None or len(self.raw_eval_dataset) == 0:
+            return []
+
+        prompts = [str(row["prompt"]) for row in self.raw_eval_dataset]
+        batch_size = max(1, int(getattr(self.args, "per_device_eval_batch_size", 1)))
+        predictions: list[str] = []
+
+        tokenizer = self.processing_class
+        model = self.model
+        device = model.device
+
+        old_padding_side = tokenizer.padding_side
+        tokenizer.padding_side = "left"
+        try:
+            was_training = model.training
+            model.eval()
+            for start in range(0, len(prompts), batch_size):
+                batch_prompts = prompts[start : start + batch_size]
+                encoded = tokenizer(
+                    batch_prompts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=self.max_prompt_length,
+                    add_special_tokens=False,
+                )
+                encoded = {key: value.to(device) for key, value in encoded.items()}
+
+                generation_kwargs = {
+                    "max_new_tokens": self.max_completion_length,
+                    "pad_token_id": tokenizer.pad_token_id,
+                    "eos_token_id": tokenizer.eos_token_id,
+                    "do_sample": not self.eval_deterministic,
+                }
+                if self.eval_deterministic:
+                    generation_kwargs["temperature"] = 1.0
+                else:
+                    generation_kwargs["temperature"] = 1.0
+                    generation_kwargs["top_p"] = 1.0
+
+                with torch.no_grad():
+                    outputs = model.generate(**encoded, **generation_kwargs)
+
+                prompt_len = encoded["input_ids"].shape[1]
+                completion_ids = outputs[:, prompt_len:]
+                predictions.extend(tokenizer.batch_decode(completion_ids, skip_special_tokens=True))
+
+            if was_training:
+                model.train()
+        finally:
+            tokenizer.padding_side = old_padding_side
+
+        return predictions
+
+    def _log_eval_input_examples(
+        self,
+        predictions: list[str],
+        references: list[str],
+        tasks: list[str],
+    ) -> None:
+        if not self.log_input_examples or self.raw_eval_dataset is None:
+            return
+        if not self.is_world_process_zero():
+            return
+        if not self.args.report_to or "wandb" not in self.args.report_to:
+            return
+        if wandb is None or wandb.run is None:
+            return
+
+        import pandas as pd
+
+        rows = []
+        for idx, row in enumerate(self.raw_eval_dataset):
+            prediction = predictions[idx] if idx < len(predictions) else ""
+            task = _normalize_task(tasks[idx]) if idx < len(tasks) else _normalize_task(str(row["eval_task"]))
+            rows.append(
+                {
+                    "step": str(self.state.global_step),
+                    "student_input": str(row["prompt"]),
+                    "teacher_input": str(row.get("teacher_prompt", "")),
+                    "completion": prediction,
+                    "predicted_label": _parse_prediction_label(prediction, task),
+                    "gold_label": references[idx] if idx < len(references) else str(row["eval_label"]),
+                }
+            )
+        wandb.log({"eval_input_examples": wandb.Table(dataframe=pd.DataFrame(rows))})
+
+    def evaluate(
+        self,
+        eval_dataset=None,
+        ignore_keys: Optional[list[str]] = None,
+        metric_key_prefix: str = "eval",
+    ):
+        metrics = super().evaluate(eval_dataset=eval_dataset, ignore_keys=ignore_keys, metric_key_prefix=metric_key_prefix)
+
+        if self.raw_eval_dataset is None or len(self.raw_eval_dataset) == 0:
+            return metrics
+
+        predictions = self._generate_eval_predictions()
+        references = [str(row["eval_label"]) for row in self.raw_eval_dataset]
+        tasks = [str(row["eval_task"]) for row in self.raw_eval_dataset]
+
+        scored = score_small_data_predictions(predictions, references, tasks)
+        extra_metrics = {
+            f"{metric_key_prefix}_small_data_accuracy": sum(scored["accuracy"]) / len(scored["accuracy"]),
+            f"{metric_key_prefix}_small_data_parse_success": sum(scored["parse_success"]) / len(scored["parse_success"]),
+        }
+        metrics.update(extra_metrics)
+        self.log(extra_metrics)
+        self._log_eval_input_examples(predictions=predictions, references=references, tasks=tasks)
+
+        return metrics

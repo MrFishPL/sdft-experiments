@@ -1,6 +1,7 @@
 import unittest
 from collections import defaultdict
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from sdft.trainers.distil.mixins.logging import LoggingMixin
 
@@ -24,6 +25,7 @@ class _DummyLoggingTrainer(LoggingMixin, _BaseRecorder):
         self._metrics = {"train": defaultdict(list), "eval": defaultdict(list)}
         self.accelerator = SimpleNamespace(is_main_process=False)
         self.log_completions = False
+        self.log_examples_eval_only = True
         self.num_completions_to_print = None
         self.wandb_log_unique_prompts = False
         self.args = SimpleNamespace(report_to=[], hub_model_id=None, output_dir="runs/my-model")
@@ -31,6 +33,8 @@ class _DummyLoggingTrainer(LoggingMixin, _BaseRecorder):
         self._logs = {
             "images": [],
             "prompt": [],
+            "student_input": [],
+            "teacher_input": [],
             "completion": [],
             "rewards": defaultdict(list),
             "advantages": [],
@@ -102,6 +106,48 @@ class LoggingMixinTest(unittest.TestCase):
         trainer._save_checkpoint(model="m", trial="t")
 
         self.assertEqual(trainer.model_card_names, ["custom-name"])
+
+    def test_eval_only_example_logging_gate(self):
+        trainer = _DummyLoggingTrainer(training=True)
+        trainer.accelerator.is_main_process = True
+        trainer.log_completions = True
+        trainer.args.report_to = ["wandb"]
+        trainer._logs["prompt"] = ["p"]
+        trainer._logs["student_input"] = ["student p"]
+        trainer._logs["teacher_input"] = ["teacher p"]
+        trainer._logs["completion"] = ["c"]
+        trainer._logs["advantages"] = [0.0]
+        trainer._logs["rewards"]["main"] = [0.0]
+
+        captured = []
+
+        class _DummyWandb:
+            run = object()
+
+            @staticmethod
+            def Image(image):
+                return image
+
+            @staticmethod
+            def Table(dataframe):
+                return dataframe
+
+            @staticmethod
+            def log(payload):
+                captured.append(payload)
+
+        with (
+            patch("sdft.trainers.distil.mixins.logging.is_rich_available", return_value=False),
+            patch("sdft.trainers.distil.mixins.logging.wandb", _DummyWandb),
+        ):
+            trainer.log({"loss": 1.0})
+            self.assertEqual(len(captured), 0)
+
+            trainer.log({"eval_loss": 1.0})
+            self.assertEqual(len(captured), 1)
+            table = captured[0]["completions"]
+            self.assertIn("student_input", table.columns)
+            self.assertIn("teacher_input", table.columns)
 
 
 if __name__ == "__main__":
