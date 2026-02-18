@@ -83,6 +83,18 @@ class GenerationMixinTest(unittest.TestCase):
         self.assertIn("tooluse_action_name_match", trainer._metrics["eval"])
         self.assertEqual(trainer._metrics["eval"]["tooluse_strict_match"][0], 1.0)
 
+    def test_log_small_data_eval_metrics_adds_expected_metrics(self):
+        trainer = _DummyGenerationMetricsTrainer()
+        inputs = [{"eval_label": "choice1", "eval_task": "copa"}]
+        completions = ["Reasoning: ...\nFinal Label: choice1"]
+
+        trainer._log_small_data_eval_metrics(inputs=inputs, completions_text=completions, device=torch.device("cpu"))
+
+        self.assertIn("small_data_accuracy", trainer._metrics["eval"])
+        self.assertIn("small_data_parse_success", trainer._metrics["eval"])
+        self.assertEqual(trainer._metrics["eval"]["small_data_accuracy"][0], 1.0)
+        self.assertEqual(trainer._metrics["eval"]["small_data_parse_success"][0], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

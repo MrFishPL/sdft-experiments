@@ -94,6 +94,17 @@ class LossMixinTest(unittest.TestCase):
         self.assertIn("entropy", trainer._metrics["train"])
         self.assertGreater(len(trainer._metrics["train"]["kl_approx"]), 0)
 
+    def test_compute_loss_handles_missing_current_gradient_accumulation_steps(self):
+        trainer = _DummyLossTrainer(num_loss_tokens_to_skip=0)
+        del trainer.current_gradient_accumulation_steps
+        trainer.model.training = False
+
+        loss = trainer._compute_loss(model=None, inputs=self._make_inputs())
+
+        self.assertTrue(torch.isfinite(loss).item())
+        self.assertIn("kl_approx", trainer._metrics["eval"])
+        self.assertIn("entropy", trainer._metrics["eval"])
+
 
 if __name__ == "__main__":
     unittest.main()

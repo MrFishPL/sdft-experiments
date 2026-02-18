@@ -10,7 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from sdft.config import DistilConfig
-from sdft.data import load_tooluse_dataset
+from sdft.data import load_superglue_small_dataset, load_tooluse_dataset
 from sdft.trainers import DistilTrainer
 
 
@@ -40,6 +40,13 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate")
     parser.add_argument("--num_train_epochs", type=int, default=2, help="Number of training epochs")
     parser.add_argument("--num_prompts_per_batch", type=int, default=32, help="Number of prompts per batch")
+    parser.add_argument(
+        "--task",
+        type=str,
+        default="tooluse",
+        choices=["tooluse", "copa", "cb", "wsc"],
+        help="Training/evaluation task.",
+    )
     parser.add_argument("--per_device_train_batch_size", type=int, default=1, help="Per-device train micro-batch size")
     parser.add_argument(
         "--gradient_accumulation_steps",
@@ -140,12 +147,15 @@ def _build_config(args: argparse.Namespace) -> DistilConfig:
     }
 
     if do_eval:
+        metric_for_best_model = "eval_tooluse_strict_match"
+        if args.task in {"copa", "cb", "wsc"}:
+            metric_for_best_model = "eval_small_data_accuracy"
         config_kwargs.update(
             {
                 "eval_steps": args.eval_steps,
                 "save_strategy": args.eval_strategy,
                 "load_best_model_at_end": True,
-                "metric_for_best_model": "eval_tooluse_strict_match",
+                "metric_for_best_model": metric_for_best_model,
                 "greater_is_better": True,
             }
         )
@@ -178,7 +188,10 @@ def main() -> None:
         torch_dtype=torch.bfloat16,
     )
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    train_dataset, eval_dataset = load_tooluse_dataset(args.seed)
+    if args.task == "tooluse":
+        train_dataset, eval_dataset = load_tooluse_dataset(args.seed)
+    else:
+        train_dataset, eval_dataset = load_superglue_small_dataset(task=args.task, seed=args.seed)
 
     config = _build_config(args)
     trainer = DistilTrainer(
@@ -189,6 +202,8 @@ def main() -> None:
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
     )
+    if config.do_eval and eval_dataset is not None:
+        trainer.evaluate()
     trainer.train()
 
 

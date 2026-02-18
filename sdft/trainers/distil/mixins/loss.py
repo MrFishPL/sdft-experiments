@@ -106,7 +106,12 @@ class LossMixin:
             per_token_loss = per_token_loss * entropy_mask
 
         loss = ((per_token_loss * loss_completion_mask).sum(-1) / loss_completion_mask.sum(-1).clamp(min=1.0)).mean()
-        loss = loss / self.current_gradient_accumulation_steps
+        # `current_gradient_accumulation_steps` may be unset before the first training step
+        # (e.g., when running an initial baseline eval before `train()`).
+        grad_accum_steps = getattr(self, "current_gradient_accumulation_steps", 1)
+        if grad_accum_steps is None or grad_accum_steps <= 0:
+            grad_accum_steps = 1
+        loss = loss / grad_accum_steps
 
         # Log the metrics
         mode = "train" if self.model.training else "eval"
@@ -140,4 +145,3 @@ class LossMixin:
                 loss = self.compute_loss(model, inputs)
             loss = loss.mean().detach()
         return loss, None, None
-

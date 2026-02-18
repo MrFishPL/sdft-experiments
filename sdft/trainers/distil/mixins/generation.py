@@ -12,6 +12,24 @@ class GenerationMixin:
             values_tensor = torch.tensor(values, dtype=torch.float32, device=device)
             self._metrics["eval"][f"tooluse_{metric_name}"].append(self.accelerator.gather(values_tensor).mean().item())
 
+    def _log_small_data_eval_metrics(
+        self,
+        inputs: list[dict[str, Any]],
+        completions_text: list[str],
+        device: torch.device,
+    ) -> None:
+        if not inputs or not all("eval_label" in example and "eval_task" in example for example in inputs):
+            return
+
+        references = [str(example.get("eval_label", "")) for example in inputs]
+        tasks = [str(example.get("eval_task", "")) for example in inputs]
+        metric_lists = score_small_data_predictions(completions_text, references, tasks)
+        for metric_name, values in metric_lists.items():
+            values_tensor = torch.tensor(values, dtype=torch.float32, device=device)
+            self._metrics["eval"][f"small_data_{metric_name}"].append(
+                self.accelerator.gather(values_tensor).mean().item()
+            )
+
     def _prepare_inputs(
         self, generation_batch: dict[str, Union[torch.Tensor, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
@@ -565,6 +583,7 @@ class GenerationMixin:
 
         if mode == "eval":
             self._log_tooluse_eval_metrics(inputs=inputs, completions_text=completions_text, device=device)
+            self._log_small_data_eval_metrics(inputs=inputs, completions_text=completions_text, device=device)
         
         # Not really necessary, but keeping for now
         rewards = torch.zeros_like(completion_ids, dtype=torch.float32)
