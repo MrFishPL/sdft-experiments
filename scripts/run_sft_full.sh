@@ -5,11 +5,11 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
 TASK="${TASK:-wsc}" # tooluse|copa|cb|wsc
-MODEL_NAME="${MODEL_NAME:-Qwen/Qwen2.5-7B-Instruct}"
+MODEL_NAME="${MODEL_NAME:-Qwen/Qwen2.5-3B-Instruct}"
 NUM_GPUS="${NUM_GPUS:-1}"
 CUDA_DEVICES="${CUDA_DEVICES:-0}"
-DEVICE_BS="${DEVICE_BS:-1}"
-ACCUM_STEPS="${ACCUM_STEPS:-32}"
+DEVICE_BS="${DEVICE_BS:-4}"
+ACCUM_STEPS="${ACCUM_STEPS:-8}"
 PER_DEVICE_EVAL_BS="${PER_DEVICE_EVAL_BS:-8}"
 EVAL_STEPS="${EVAL_STEPS:-10}"
 LEARNING_RATE="${LEARNING_RATE:-1e-5}"
@@ -20,7 +20,8 @@ MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-1024}"
 MAX_COMPLETION_LENGTH="${MAX_COMPLETION_LENGTH:-}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/runs}"
 LOG_ROOT="${LOG_ROOT:-${REPO_ROOT}/logs/runs}"
-TARGET_UPDATES="${TARGET_UPDATES:-500}"
+TARGET_UPDATES="${TARGET_UPDATES:-2000}"
+NUM_GENERATIONS="${NUM_GENERATIONS:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 
 mkdir -p "${OUTPUT_ROOT}" "${LOG_ROOT}"
@@ -62,9 +63,13 @@ if (( TARGET_UPDATES <= 0 )); then
   echo "TARGET_UPDATES must be >= 1 (got ${TARGET_UPDATES})" >&2
   exit 1
 fi
+if (( NUM_GENERATIONS < 1 )); then
+  echo "NUM_GENERATIONS must be >= 1 (got ${NUM_GENERATIONS})" >&2
+  exit 1
+fi
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-RUN_NAME="${TASK}_sft_full"
+RUN_NAME="${TASK}_sft_full_ng${NUM_GENERATIONS}"
 RUN_DIR="${OUTPUT_ROOT}/${RUN_NAME}_${TIMESTAMP}"
 LOG_FILE="${LOG_ROOT}/${RUN_NAME}_${TIMESTAMP}.log"
 
@@ -85,7 +90,7 @@ CMD=(
   --save_steps 100
   --max_prompt_length "${MAX_PROMPT_LENGTH}"
   --max_completion_length "${MAX_COMPLETION_LENGTH}"
-  --num_generations 1
+  --num_generations "${NUM_GENERATIONS}"
   --max_grad_norm "${MAX_GRAD_NORM}"
   --warmup_steps "${WARMUP_STEPS}"
   --eval_deterministic
@@ -99,6 +104,7 @@ CMD=(
 
 echo "=== SFT FULL ==="
 echo "task=${TASK}"
+echo "num_generations=${NUM_GENERATIONS}"
 echo "train_samples=${TRAIN_SAMPLES}"
 echo "effective_bs=${EFFECTIVE_BS}"
 echo "target_updates=${TARGET_UPDATES}"

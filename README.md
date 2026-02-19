@@ -22,7 +22,7 @@ Use these four scripts for all experiments:
 
 ## Shared Comparability Mechanism (Equal Update Budget)
 All scripts are step-based and use the same update budget by default:
-- `TARGET_UPDATES=1000` (default for every method and scenario)
+- `TARGET_UPDATES=2000` (default for every method and scenario)
 
 Effective batch size is still controlled by:
 ```text
@@ -37,7 +37,7 @@ How `TARGET_UPDATES` is applied:
 
 Override if needed:
 ```bash
-TARGET_UPDATES=2000 bash scripts/run_sdft_full.sh
+TARGET_UPDATES=4000 bash scripts/run_sdft_full.sh
 ```
 
 ## Evaluation Defaults
@@ -160,14 +160,16 @@ DRY_RUN=1 TASK=wsc FEWSHOT_NUM_EXAMPLES=5 FEWSHOT_INDICES_FILE=data/superglue_fe
 ## Important Runtime Knobs
 Common environment variables for all scripts:
 - `TASK`: `tooluse|copa|cb|wsc`
-- `MODEL_NAME` (default `Qwen/Qwen2.5-7B-Instruct`)
+- `MODEL_NAME` (default `Qwen/Qwen2.5-3B-Instruct`)
 - `NUM_GPUS` (default `1`)
 - `CUDA_DEVICES` (default `0`)
-- `DEVICE_BS` (default `1`)
-- `ACCUM_STEPS` (default `32`)
+- `DEVICE_BS` (default `4`)
+- `ACCUM_STEPS` (default `8`)
 - `PER_DEVICE_EVAL_BS` (default `8`)
 - `EVAL_STEPS` (default `10`)
-- `TARGET_UPDATES` (default `1000`)
+- `TARGET_UPDATES` (default `2000`)
+- `LEARNING_RATE` (default `1e-5`)
+- `MAX_GRAD_NORM` (default `10`)
 
 SDFT-only:
 - `NUM_GENERATIONS`

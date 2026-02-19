@@ -23,7 +23,7 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertTrue(args.final_eval)
         self.assertIsNone(args.log_input_examples)
         self.assertTrue(args.log_examples_eval_only)
-        self.assertEqual(args.target_updates, 1000)
+        self.assertEqual(args.target_updates, 2000)
         self.assertEqual(args.num_loss_tokens_to_skip, 3)
         self.assertEqual(args.max_grad_norm, 1.0)
         self.assertIsNone(args.fewshot_indices_file)

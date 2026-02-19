@@ -74,7 +74,7 @@ def parse_args():
     )
     parser.add_argument("--ref_model_mixup_alpha", type=float, default=0.02, help="Reference model mixup alpha")
     parser.add_argument("--output_dir", type=str, default="runs/tooluse", help="Output directory")
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-7B-Instruct", help="Model name")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-3B-Instruct", help="Model name")
     parser.add_argument("--seed", type=int, default=42, help="Seed")
     parser.add_argument("--eval_steps", type=int, default=100, help="Validation cadence in steps")
     parser.add_argument(
@@ -110,7 +110,7 @@ def parse_args():
     parser.add_argument(
         "--target_updates",
         type=int,
-        default=1000,
+        default=2000,
         help=(
             "Training budget in update units. "
             "For SFT this equals optimizer steps. "
