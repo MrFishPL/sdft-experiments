@@ -110,7 +110,7 @@ def parse_args():
     parser.add_argument(
         "--target_updates",
         type=int,
-        default=2000,
+        default=512,
         help=(
             "Training budget in update units. "
             "For SFT this equals optimizer steps. "

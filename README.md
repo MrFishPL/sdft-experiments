@@ -22,7 +22,7 @@ Use these four scripts for all experiments:
 
 ## Shared Comparability Mechanism (Equal Update Budget)
 All scripts are step-based and use the same update budget by default:
-- `TARGET_UPDATES=2000` (default for every method and scenario)
+- `TARGET_UPDATES=512` (default for every method and scenario)
 
 Effective batch size is still controlled by:
 ```text
@@ -37,7 +37,7 @@ How `TARGET_UPDATES` is applied:
 
 Override if needed:
 ```bash
-TARGET_UPDATES=4000 bash scripts/run_sdft_full.sh
+TARGET_UPDATES=2000 bash scripts/run_sdft_full.sh
 ```
 
 ## Evaluation Defaults
@@ -167,7 +167,7 @@ Common environment variables for all scripts:
 - `ACCUM_STEPS` (default `8`)
 - `PER_DEVICE_EVAL_BS` (default `8`)
 - `EVAL_STEPS` (default `10`)
-- `TARGET_UPDATES` (default `2000`)
+- `TARGET_UPDATES` (default `512`)
 - `LEARNING_RATE` (default `1e-5`)
 - `MAX_GRAD_NORM` (default `10`)
 
