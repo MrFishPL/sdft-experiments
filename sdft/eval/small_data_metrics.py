@@ -40,23 +40,7 @@ def _parse_prediction_label(prediction: str, task: str) -> tuple[str | None, boo
         normalized = _normalize_label(task, candidate)
         if normalized is not None:
             return normalized, True
-
-    # Fallback: first label token mentioned in the text.
-    prediction_lower = prediction.lower()
-    earliest_pos = None
-    earliest_label = None
-    for label in _TASK_LABELS[task]:
-        label_lower = label.lower()
-        pattern = re.compile(rf"(?<![a-z0-9_]){re.escape(label_lower)}(?![a-z0-9_])")
-        match = pattern.search(prediction_lower)
-        if match is None:
-            continue
-        if earliest_pos is None or match.start() < earliest_pos:
-            earliest_pos = match.start()
-            earliest_label = label
-
-    if earliest_label is not None:
-        return earliest_label, True
+    # Strict parsing only: no fallback to free-text label mentions.
     return None, False
 
 

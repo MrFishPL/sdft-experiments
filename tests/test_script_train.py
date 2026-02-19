@@ -1,4 +1,7 @@
+import json
+import os
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,13 +18,15 @@ class ScriptTrainTest(unittest.TestCase):
 
         self.assertEqual(args.method, "sdft")
         self.assertEqual(args.task, "tooluse")
-        self.assertEqual(args.eval_num_generations, 1)
         self.assertTrue(args.eval_deterministic)
         self.assertTrue(args.eval_before_train)
         self.assertTrue(args.final_eval)
         self.assertIsNone(args.log_input_examples)
         self.assertTrue(args.log_examples_eval_only)
         self.assertEqual(args.max_steps, -1)
+        self.assertIsNone(args.fewshot_indices_file)
+        self.assertIsNone(args.fewshot_num_examples)
+        self.assertIsNone(args.distil_generation_batch_size)
 
     def test_parse_args_overrides(self):
         with patch.object(
@@ -33,8 +38,6 @@ class ScriptTrainTest(unittest.TestCase):
                 "sft",
                 "--task",
                 "wsc",
-                "--eval_num_generations",
-                "3",
                 "--no-eval_deterministic",
                 "--no-eval_before_train",
                 "--no-final_eval",
@@ -42,19 +45,27 @@ class ScriptTrainTest(unittest.TestCase):
                 "--no-log_examples_eval_only",
                 "--max_steps",
                 "5",
+                "--fewshot_indices_file",
+                "data/superglue_fewshot_5shot_curated.json",
+                "--fewshot_num_examples",
+                "5",
+                "--distil_generation_batch_size",
+                "64",
             ],
         ):
             args = train_script.parse_args()
 
         self.assertEqual(args.method, "sft")
         self.assertEqual(args.task, "wsc")
-        self.assertEqual(args.eval_num_generations, 3)
         self.assertFalse(args.eval_deterministic)
         self.assertFalse(args.eval_before_train)
         self.assertFalse(args.final_eval)
         self.assertTrue(args.log_input_examples)
         self.assertFalse(args.log_examples_eval_only)
         self.assertEqual(args.max_steps, 5)
+        self.assertEqual(args.fewshot_indices_file, "data/superglue_fewshot_5shot_curated.json")
+        self.assertEqual(args.fewshot_num_examples, 5)
+        self.assertEqual(args.distil_generation_batch_size, 64)
 
     def _base_args(self, *, method: str, task: str) -> SimpleNamespace:
         return SimpleNamespace(
@@ -76,7 +87,6 @@ class ScriptTrainTest(unittest.TestCase):
             max_prompt_length=1024,
             max_completion_length=128,
             num_generations=4,
-            eval_num_generations=1,
             warmup_steps=25,
             max_steps=-1,
             run_name="run-name",
@@ -87,6 +97,9 @@ class ScriptTrainTest(unittest.TestCase):
             log_input_examples=None,
             log_examples_eval_only=True,
             paper_hparams=True,
+            fewshot_indices_file=None,
+            fewshot_num_examples=None,
+            distil_generation_batch_size=None,
         )
 
     def test_main_dispatches_sdft_and_runs_eval_before_after_train(self):
@@ -137,7 +150,7 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertEqual(model_mock.call_count, 2)
         model_mock.assert_any_call("dummy-model", torch_dtype=torch.bfloat16)
         tooluse_data_mock.assert_not_called()
-        superglue_data_mock.assert_called_once_with(task="copa", seed=11)
+        superglue_data_mock.assert_called_once_with(task="copa", seed=11, train_indices=None)
         sft_data_mock.assert_not_called()
         sft_trainer_mock.assert_not_called()
         self.assertTrue(DummyDistilTrainer.trained)
@@ -145,7 +158,6 @@ class ScriptTrainTest(unittest.TestCase):
 
         cfg = DummyDistilTrainer.init_kwargs["args"]
         self.assertEqual(cfg.metric_for_best_model, "eval_small_data_accuracy")
-        self.assertEqual(cfg.eval_num_generations, 1)
         self.assertTrue(cfg.eval_deterministic)
         self.assertTrue(cfg.log_completions)  # default True for small-data tasks
         self.assertTrue(cfg.log_examples_eval_only)
@@ -186,7 +198,7 @@ class ScriptTrainTest(unittest.TestCase):
             train_script.main()
 
         self.assertEqual(model_mock.call_count, 1)
-        sft_data_mock.assert_called_once_with(task="wsc", seed=11)
+        sft_data_mock.assert_called_once_with(task="wsc", seed=11, train_indices=None)
         tooluse_data_mock.assert_not_called()
         superglue_data_mock.assert_not_called()
         distil_trainer_mock.assert_not_called()
@@ -241,6 +253,67 @@ class ScriptTrainTest(unittest.TestCase):
         parsed = self._base_args(method="sft", task="tooluse")
         with patch.object(train_script, "parse_args", return_value=parsed):
             with self.assertRaisesRegex(ValueError, "method=sft is only supported"):
+                train_script.main()
+
+    def test_main_passes_fewshot_indices_and_distil_generation_batch_size(self):
+        parsed = self._base_args(method="sdft", task="wsc")
+        parsed.num_generations = 8
+        parsed.distil_generation_batch_size = 8
+
+        fewshot_payload = {
+            "version": 1,
+            "tasks": {"wsc": {"train_indices": [0, 2, 4], "rationale": "test"}},
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as handle:
+            json.dump(fewshot_payload, handle)
+            parsed.fewshot_indices_file = handle.name
+        parsed.fewshot_num_examples = 3
+
+        student_model = object()
+        teacher_model = object()
+        tokenizer = SimpleNamespace(pad_token=None, eos_token="</s>")
+        train_dataset = [{"prompt": "p", "teacher_prompt": "t"}]
+        eval_dataset = [{"prompt": "p", "teacher_prompt": "t", "eval_label": "True", "eval_task": "wsc"}]
+
+        class DummyDistilTrainer:
+            init_kwargs = None
+
+            def __init__(self, **kwargs):
+                DummyDistilTrainer.init_kwargs = kwargs
+
+            def evaluate(self):
+                return None
+
+            def train(self):
+                return None
+
+        try:
+            with (
+                patch.object(train_script, "parse_args", return_value=parsed),
+                patch.object(train_script.AutoModelForCausalLM, "from_pretrained", side_effect=[student_model, teacher_model]),
+                patch.object(train_script.AutoTokenizer, "from_pretrained", return_value=tokenizer),
+                patch.object(
+                    train_script,
+                    "load_superglue_small_dataset",
+                    return_value=(train_dataset, eval_dataset),
+                ) as superglue_data_mock,
+                patch.object(train_script, "_vllm_runtime_usable", return_value=True),
+                patch.object(train_script, "DistilConfig", side_effect=lambda **kwargs: SimpleNamespace(**kwargs)),
+                patch.object(train_script, "DistilTrainer", DummyDistilTrainer),
+            ):
+                train_script.main()
+
+            superglue_data_mock.assert_called_once_with(task="wsc", seed=11, train_indices=[0, 2, 4])
+            cfg = DummyDistilTrainer.init_kwargs["args"]
+            self.assertEqual(cfg.generation_batch_size, 8)
+        finally:
+            os.unlink(parsed.fewshot_indices_file)
+
+    def test_main_rejects_distil_generation_batch_size_for_sft(self):
+        parsed = self._base_args(method="sft", task="wsc")
+        parsed.distil_generation_batch_size = 16
+        with patch.object(train_script, "parse_args", return_value=parsed):
+            with self.assertRaisesRegex(ValueError, "supported only when --method=sdft"):
                 train_script.main()
 
 

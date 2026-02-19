@@ -13,14 +13,14 @@ class SmallDataMetricsTest(unittest.TestCase):
         self.assertEqual(scores["accuracy"], [1.0])
         self.assertEqual(scores["parse_success"], [1.0])
 
-    def test_fallback_parsing_without_final_label(self):
+    def test_missing_final_label_is_not_parsed(self):
         scores = score_small_data_predictions(
             predictions=["The relation is entailment based on the premise."],
             references=["entailment"],
             tasks=["cb"],
         )
-        self.assertEqual(scores["accuracy"], [1.0])
-        self.assertEqual(scores["parse_success"], [1.0])
+        self.assertEqual(scores["accuracy"], [0.0])
+        self.assertEqual(scores["parse_success"], [0.0])
 
     def test_parse_failure_sets_parse_success_to_zero(self):
         scores = score_small_data_predictions(

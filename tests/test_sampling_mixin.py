@@ -30,7 +30,6 @@ class _DummySamplingTrainer(SamplingMixin):
             dataloader_prefetch_factor=None,
             process_index=0,
             generation_batch_size=8,
-            eval_num_generations=1,
             seed=123,
         )
 

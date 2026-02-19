@@ -20,7 +20,7 @@ Current focus is SuperGLUE small-data benchmarks (`copa`, `cb`, `wsc`), with ove
 | Model | `Qwen/Qwen2.5-3B-Instruct` | Main model for WSC ablation runs |
 | Validation cadence | Every 10 steps | Frequent enough to track overfitting onset |
 | Final validation | Enabled | Always get end-of-run checkpoint quality |
-| Eval generations | `eval_num_generations=1` | Stable and avoids divisibility issues at high train `num_generations` |
+| Eval generations | Fixed to one pass over validation set | Keeps validation cost predictable and directly tied to dataset size |
 | Eval decoding | Deterministic | Lower metric noise for fair comparison |
 | Orchestrator policy | Fail-fast | Avoid wasting overnight GPU on broken config |
 | Batch policy | Fixed conservative | Safer overnight utilization |
@@ -62,6 +62,36 @@ sft_max_steps = longest_sdft_steps_per_epoch * NUM_EPOCHS
 If you set `MAX_STEPS>0`, that value overrides this auto-alignment for both SFT and SDFT scenarios.
 
 ## Run Commands
+### Full 5-shot SuperGLUE sweep (baseline + SDFT 256->1)
+
+```bash
+cd /home/karp/sdft-experiments
+
+# Optional for online logging
+uv run wandb login
+
+WANDB_MODE=online \
+TASKS="copa cb wsc" \
+DISTIL_NUM_GENERATIONS_LIST="256 128 64 32 16 8 4 1" \
+EPOCHS_AT_MAX_GEN=5 \
+FEWSHOT_NUM_EXAMPLES=5 \
+EVAL_STEPS=10 \
+bash scripts/run_superglue_fewshot_scenarios.sh
+```
+
+Notes:
+- Runs baseline SFT first per task, then SDFT in order `256 -> 1`.
+- Uses the curated 5-shot file: `data/superglue_fewshot_5shot_curated.json`.
+- Validation runs every 10 steps and also once before training starts (`--eval_before_train`).
+- Outputs are written to `runs/` and logs to `logs/runs/`.
+
+### Few-shot smoke test
+
+```bash
+cd /home/karp/sdft-experiments
+WANDB_MODE=offline bash scripts/run_superglue_fewshot_scenarios_smoke.sh
+```
+
 ### Smoke test first
 Run this before overnight jobs:
 
@@ -118,7 +148,6 @@ uv run accelerate launch --num_processes 1 -m scripts.train \
   --per_device_train_batch_size 16 \
   --gradient_accumulation_steps 4 \
   --num_generations 8 \
-  --eval_num_generations 1 \
   --eval_deterministic \
   --eval_steps 10 \
   --eval_strategy steps \
@@ -134,7 +163,7 @@ uv run accelerate launch --num_processes 1 -m scripts.train \
 ## GPU Safety Checklist
 - Run smoke matrix before full night run.
 - Keep conservative defaults first; increase `DEVICE_BS` only after stable smoke.
-- Keep `eval_num_generations=1` for metric stability and memory safety.
+- Keep deterministic eval for metric stability and memory safety.
 - Watch logs for CUDA OOM or repeated parse failures.
 
 ## Troubleshooting
@@ -149,6 +178,8 @@ uv run accelerate launch --num_processes 1 -m scripts.train \
 
 ## Repo Map
 - `scripts/train.py`: unified SDFT/SFT entrypoint
+- `scripts/run_superglue_fewshot_scenarios.sh`: full 5-shot SuperGLUE scenario matrix
+- `scripts/run_superglue_fewshot_scenarios_smoke.sh`: cheap preflight for the 5-shot matrix
 - `scripts/run_wsc_scenarios.sh`: full WSC scenario matrix (fail-fast)
 - `scripts/run_wsc_scenarios_smoke.sh`: cheap preflight matrix
 - `sdft/data/superglue_small.py`: low-data dataset loaders

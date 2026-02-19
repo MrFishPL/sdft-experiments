@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -13,6 +14,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from sdft.config import DistilConfig
 from sdft.data import load_superglue_small_dataset, load_superglue_small_sft_dataset, load_tooluse_dataset
 from sdft.trainers import DistilTrainer, SmallDataSFTTrainer
+
+_SMALL_DATA_TASKS = {"copa", "cb", "wsc"}
 
 
 def _vllm_runtime_usable() -> bool:
@@ -84,12 +87,6 @@ def parse_args():
         default=1,
         help="Number of sampled completions per prompt group.",
     )
-    parser.add_argument(
-        "--eval_num_generations",
-        type=int,
-        default=1,
-        help="Number of sampled completions per prompt group during evaluation.",
-    )
     parser.add_argument("--warmup_steps", type=int, default=10, help="Warmup steps")
     parser.add_argument("--max_steps", type=int, default=-1, help="Maximum training steps (overrides epochs when > 0)")
     parser.add_argument("--run_name", type=str, default=None, help="WandB run name")
@@ -135,6 +132,24 @@ def parse_args():
         default=True,
         help="Apply ToolUse paper-aligned non-swept hyperparameters.",
     )
+    parser.add_argument(
+        "--fewshot_indices_file",
+        type=str,
+        default=None,
+        help="Path to JSON file with curated few-shot training indices per task.",
+    )
+    parser.add_argument(
+        "--fewshot_num_examples",
+        type=int,
+        default=None,
+        help="Expected number of few-shot examples selected from the index file.",
+    )
+    parser.add_argument(
+        "--distil_generation_batch_size",
+        type=int,
+        default=None,
+        help="Optional Distil generation_batch_size override (SDFT only).",
+    )
     return parser.parse_args()
 
 
@@ -154,7 +169,37 @@ def _resolve_gradient_accumulation_steps(args: argparse.Namespace) -> int:
 def _resolve_log_input_examples(args: argparse.Namespace) -> bool:
     if args.log_input_examples is not None:
         return args.log_input_examples
-    return args.task in {"copa", "cb", "wsc"}
+    return args.task in _SMALL_DATA_TASKS
+
+
+def _load_fewshot_train_indices(args: argparse.Namespace) -> list[int] | None:
+    if args.fewshot_indices_file is None:
+        return None
+    if args.task not in _SMALL_DATA_TASKS:
+        raise ValueError("--fewshot_indices_file is supported only for low-data tasks: copa, cb, wsc.")
+
+    path = Path(args.fewshot_indices_file)
+    if not path.exists():
+        raise ValueError(f"Few-shot index file not found: {path}")
+
+    with path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    tasks_payload = payload.get("tasks")
+    if not isinstance(tasks_payload, dict):
+        raise ValueError("Few-shot index file must contain a top-level object field 'tasks'.")
+    task_payload = tasks_payload.get(args.task)
+    if not isinstance(task_payload, dict):
+        raise ValueError(f"Few-shot index file does not contain task entry for '{args.task}'.")
+    train_indices = task_payload.get("train_indices")
+    if not isinstance(train_indices, list):
+        raise ValueError(f"Task '{args.task}' must provide 'train_indices' as a list.")
+
+    if args.fewshot_num_examples is not None and len(train_indices) != args.fewshot_num_examples:
+        raise ValueError(
+            f"Task '{args.task}' selected {len(train_indices)} examples, "
+            f"but --fewshot_num_examples={args.fewshot_num_examples}."
+        )
+    return train_indices
 
 
 def _build_distil_config(args: argparse.Namespace) -> DistilConfig:
@@ -185,7 +230,6 @@ def _build_distil_config(args: argparse.Namespace) -> DistilConfig:
         "max_prompt_length": args.max_prompt_length,
         "max_completion_length": args.max_completion_length,
         "num_generations": args.num_generations,
-        "eval_num_generations": args.eval_num_generations,
         "eval_deterministic": args.eval_deterministic,
         "num_train_epochs": args.num_train_epochs,
         "max_steps": args.max_steps,
@@ -233,6 +277,9 @@ def _build_distil_config(args: argparse.Namespace) -> DistilConfig:
                 "optim": "adamw_torch",
             }
         )
+
+    if args.distil_generation_batch_size is not None:
+        config_kwargs["generation_batch_size"] = args.distil_generation_batch_size
 
     return DistilConfig(**config_kwargs)
 
@@ -299,6 +346,9 @@ def main() -> None:
     args = parse_args()
     if args.method == "sft" and args.task == "tooluse":
         raise ValueError("method=sft is only supported for low-data tasks: copa, cb, wsc.")
+    if args.distil_generation_batch_size is not None and args.method != "sdft":
+        raise ValueError("--distil_generation_batch_size is supported only when --method=sdft.")
+    fewshot_train_indices = _load_fewshot_train_indices(args)
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
@@ -314,12 +364,20 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     if args.method == "sft":
-        train_dataset, eval_dataset = load_superglue_small_sft_dataset(task=args.task, seed=args.seed)
+        train_dataset, eval_dataset = load_superglue_small_sft_dataset(
+            task=args.task,
+            seed=args.seed,
+            train_indices=fewshot_train_indices,
+        )
     else:
         if args.task == "tooluse":
             train_dataset, eval_dataset = load_tooluse_dataset(args.seed)
         else:
-            train_dataset, eval_dataset = load_superglue_small_dataset(task=args.task, seed=args.seed)
+            train_dataset, eval_dataset = load_superglue_small_dataset(
+                task=args.task,
+                seed=args.seed,
+                train_indices=fewshot_train_indices,
+            )
 
     if args.method == "sft":
         config = _build_sft_config(args)

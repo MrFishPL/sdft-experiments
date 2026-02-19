@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "description": "Hand-curated 5-shot train subsets for SuperGLUE small tasks.",
+  "tasks": {
+    "copa": {
+      "train_indices": [293, 340, 1, 250, 72],
+      "rationale": "Balanced labels with both cause/effect questions and short/long premises."
+    },
+    "cb": {
+      "train_indices": [10, 4, 154, 182, 221],
+      "rationale": "Covers entailment, contradiction, and neutral with conversational and descriptive premises."
+    },
+    "wsc": {
+      "train_indices": [185, 204, 330, 9, 174],
+      "rationale": "Balanced coreference polarity with lexical, pronoun, and sentence-structure diversity."
+    }
+  }
+}

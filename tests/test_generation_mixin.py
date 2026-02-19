@@ -54,7 +54,6 @@ class _DummyEvalGenerationTrainer(GenerationMixin):
         self.model = SimpleNamespace(training=False)
         self.accelerator = SimpleNamespace(device=torch.device("cpu"), is_main_process=True, process_index=0)
         self.args = SimpleNamespace(
-            eval_num_generations=1,
             eval_deterministic=True,
             vllm_enable_sleep_mode=False,
             generation_kwargs=None,
@@ -84,6 +83,26 @@ class _DummyEvalGenerationTrainer(GenerationMixin):
 
 
 class GenerationMixinTest(unittest.TestCase):
+    def test_select_generation_prompts_eval_always_uses_student_prompts(self):
+        trainer = SimpleNamespace(generate_from_teacher=True)
+        selected = GenerationMixin._select_generation_prompts(
+            trainer,
+            prompts=["student"],
+            teacher_prompts=["teacher"],
+            mode="eval",
+        )
+        self.assertEqual(selected, ["student"])
+
+    def test_select_generation_prompts_train_can_use_teacher_prompts(self):
+        trainer = SimpleNamespace(generate_from_teacher=True)
+        selected = GenerationMixin._select_generation_prompts(
+            trainer,
+            prompts=["student"],
+            teacher_prompts=["teacher"],
+            mode="train",
+        )
+        self.assertEqual(selected, ["teacher"])
+
     def test_prepare_inputs_training_uses_buffer_and_respects_step(self):
         trainer = _DummyGenerationTrainer(training=True)
 
@@ -145,7 +164,7 @@ class GenerationMixinTest(unittest.TestCase):
         self.assertEqual(trainer._metrics["eval"]["small_data_accuracy"][0], 1.0)
         self.assertEqual(trainer._metrics["eval"]["small_data_parse_success"][0], 1.0)
 
-    def test_eval_vllm_server_uses_eval_num_generations_and_deterministic_decode(self):
+    def test_eval_vllm_server_uses_single_generation_and_deterministic_decode(self):
         trainer = _DummyEvalGenerationTrainer()
         prompts = ["p0", "p1", "p2", "p3"]
 

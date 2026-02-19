@@ -22,6 +22,21 @@ Remember: your last line must be exactly `Final Label: <label>`.
 )
 
 
+def _validate_train_indices(train_dataset: Dataset, train_indices: list[int] | None) -> list[int] | None:
+    if train_indices is None:
+        return None
+    if len(train_indices) == 0:
+        raise ValueError("train_indices must be non-empty when provided.")
+    if any(type(index) is not int for index in train_indices):
+        raise ValueError("train_indices must contain only integers.")
+    if len(set(train_indices)) != len(train_indices):
+        raise ValueError("train_indices must not contain duplicates.")
+    train_size = len(train_dataset)
+    if any(index < 0 or index >= train_size for index in train_indices):
+        raise ValueError(f"train_indices must be within [0, {train_size - 1}].")
+    return train_indices
+
+
 def _normalize_task(task: str) -> str:
     normalized = task.strip().lower()
     if normalized not in _SUPPORTED_TASKS:
@@ -133,12 +148,19 @@ def _build_teacher_prompt(prompt_text: str, output_text: str) -> str:
     return _TEACHER_PROMPT_TEMPLATE.substitute(prompt_text=prompt_text, output_text=output_text)
 
 
-def load_superglue_small_dataset(task: str, seed: int = 42) -> tuple[Dataset, Dataset]:
+def load_superglue_small_dataset(
+    task: str,
+    seed: int = 42,
+    train_indices: list[int] | None = None,
+) -> tuple[Dataset, Dataset]:
     """Load and format low-data SuperGLUE tasks (COPA, CB, WSC) for SDFT."""
     normalized_task = _normalize_task(task)
     raw_dataset = load_dataset("super_glue", normalized_task)
     train_dataset = raw_dataset["train"]
     eval_dataset = raw_dataset["validation"]
+    selected_indices = _validate_train_indices(train_dataset, train_indices)
+    if selected_indices is not None:
+        train_dataset = train_dataset.select(selected_indices)
 
     def format_train_example(example: dict) -> dict:
         prompt_text = _render_student_prompt(normalized_task, example)
@@ -164,12 +186,19 @@ def load_superglue_small_dataset(task: str, seed: int = 42) -> tuple[Dataset, Da
     return train_dataset, eval_dataset
 
 
-def load_superglue_small_sft_dataset(task: str, seed: int = 42) -> tuple[Dataset, Dataset]:
+def load_superglue_small_sft_dataset(
+    task: str,
+    seed: int = 42,
+    train_indices: list[int] | None = None,
+) -> tuple[Dataset, Dataset]:
     """Load and format low-data SuperGLUE tasks (COPA, CB, WSC) for SFT."""
     normalized_task = _normalize_task(task)
     raw_dataset = load_dataset("super_glue", normalized_task)
     train_dataset = raw_dataset["train"]
     eval_dataset = raw_dataset["validation"]
+    selected_indices = _validate_train_indices(train_dataset, train_indices)
+    if selected_indices is not None:
+        train_dataset = train_dataset.select(selected_indices)
 
     def format_train_example(example: dict) -> dict:
         prompt_text = _render_student_prompt(normalized_task, example)

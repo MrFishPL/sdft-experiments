@@ -2,6 +2,24 @@ from sdft.trainers.distil._imports import *
 
 
 class GenerationMixin:
+    def _select_generation_prompts(
+        self,
+        prompts: list[Any],
+        teacher_prompts: list[Any],
+        mode: str,
+    ) -> list[Any]:
+        if mode == "eval":
+            if self.generate_from_teacher:
+                try:
+                    logger.warning(
+                        "Forcing student prompts during evaluation to prevent teacher-prompt leakage in metrics."
+                    )
+                except RuntimeError:
+                    # Unit tests can call this helper without an initialized Accelerate state.
+                    pass
+            return prompts
+        return teacher_prompts if self.generate_from_teacher else prompts
+
     def _log_tooluse_eval_metrics(self, inputs: list[dict[str, Any]], completions_text: list[str], device: torch.device):
         if not inputs or not all("golden_answer" in example for example in inputs):
             return
@@ -122,7 +140,7 @@ class GenerationMixin:
     def _generate_single_turn(self, prompts: list[str], images: Optional[list]):
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
-        generation_repeat = self.num_generations if mode == "train" else self.args.eval_num_generations
+        generation_repeat = self.num_generations if mode == "train" else 1
         deterministic_eval = mode == "eval" and self.args.eval_deterministic
         vllm_temperature = 0.0 if deterministic_eval else self.temperature
         vllm_top_p = 1.0 if deterministic_eval else self.top_p
@@ -426,8 +444,8 @@ class GenerationMixin:
         if images is not None and all(img_list == [] for img_list in images):
             images = None
 
-        # Decide whether to generate from teacher (with context) or student (without context)
-        generation_prompts = teacher_prompts if self.generate_from_teacher else prompts
+        # During evaluation always use student prompts to avoid teacher-prompt leakage.
+        generation_prompts = self._select_generation_prompts(prompts, teacher_prompts, mode)
 
         (
             _generation_prompt_ids_list,  # Discard - we'll compute student/teacher prompt IDs separately

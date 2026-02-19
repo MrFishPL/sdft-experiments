@@ -95,9 +95,9 @@ class SamplingMixin:
         )
 
     def _get_eval_sampler(self, eval_dataset) -> Sampler:
-        # See _get_train_sampler for an explanation of the sampler.
+        # Evaluation uses exactly one generation per validation example.
         return RepeatSampler(
             data_source=eval_dataset,
-            mini_repeat_count=self.args.eval_num_generations,
+            mini_repeat_count=1,
             seed=self.args.seed,
         )

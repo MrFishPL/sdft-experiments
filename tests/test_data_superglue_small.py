@@ -166,6 +166,48 @@ class SuperGlueSmallDataTest(unittest.TestCase):
             order_b = [row["prompt"] for row in ds_b]
             self.assertEqual(order_a, order_b)
 
+    def test_train_indices_select_subset_for_both_sdft_and_sft(self):
+        with patch(
+            "sdft.data.superglue_small.load_dataset",
+            side_effect=lambda name, task: _build_mock_superglue_dataset(task),
+        ):
+            selected = [0, 3, 5]
+            ds_sdft, _ = load_superglue_small_dataset(task="wsc", seed=42, train_indices=selected)
+            ds_sft, _ = load_superglue_small_sft_dataset(task="wsc", seed=42, train_indices=selected)
+
+            self.assertEqual(len(ds_sdft), 3)
+            self.assertEqual(len(ds_sft), 3)
+
+            sdft_prompts = {row["prompt"][0]["content"] for row in ds_sdft}
+            sft_prompts = {row["prompt"] for row in ds_sft}
+            for idx in selected:
+                self.assertTrue(any(f"Text: text {idx}" in prompt for prompt in sdft_prompts))
+                self.assertTrue(any(f"Text: text {idx}" in prompt for prompt in sft_prompts))
+
+    def test_train_indices_validation_rejects_empty_list(self):
+        with patch(
+            "sdft.data.superglue_small.load_dataset",
+            side_effect=lambda name, task: _build_mock_superglue_dataset(task),
+        ):
+            with self.assertRaisesRegex(ValueError, "non-empty"):
+                load_superglue_small_dataset(task="wsc", seed=42, train_indices=[])
+
+    def test_train_indices_validation_rejects_duplicates(self):
+        with patch(
+            "sdft.data.superglue_small.load_dataset",
+            side_effect=lambda name, task: _build_mock_superglue_dataset(task),
+        ):
+            with self.assertRaisesRegex(ValueError, "duplicates"):
+                load_superglue_small_dataset(task="wsc", seed=42, train_indices=[1, 1, 2])
+
+    def test_train_indices_validation_rejects_out_of_range(self):
+        with patch(
+            "sdft.data.superglue_small.load_dataset",
+            side_effect=lambda name, task: _build_mock_superglue_dataset(task),
+        ):
+            with self.assertRaisesRegex(ValueError, "within"):
+                load_superglue_small_sft_dataset(task="wsc", seed=42, train_indices=[0, 7])
+
 
 if __name__ == "__main__":
     unittest.main()

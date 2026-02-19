@@ -12,7 +12,6 @@ DEVICE_BS="${DEVICE_BS:-16}"
 ACCUM_STEPS="${ACCUM_STEPS:-4}"
 PER_DEVICE_EVAL_BS="${PER_DEVICE_EVAL_BS:-8}"
 EVAL_STEPS="${EVAL_STEPS:-10}"
-EVAL_NUM_GENERATIONS="${EVAL_NUM_GENERATIONS:-1}"
 NUM_EPOCHS="${NUM_EPOCHS:-10}"
 MAX_STEPS="${MAX_STEPS:--1}"
 LEARNING_RATE="${LEARNING_RATE:-1e-5}"
@@ -128,7 +127,6 @@ run_scenario() {
     --max_prompt_length "${MAX_PROMPT_LENGTH}"
     --max_completion_length "${MAX_COMPLETION_LENGTH}"
     --num_generations "${num_generations}"
-    --eval_num_generations "${EVAL_NUM_GENERATIONS}"
     --eval_deterministic
     --eval_before_train
     --final_eval

@@ -1,4 +1,6 @@
 import re
+import sys
+import time
 from typing import Any, Optional
 
 import torch
@@ -47,20 +49,7 @@ def _parse_prediction_label(prediction: str, task: str) -> str | None:
         normalized = _normalize_label(task, candidate)
         if normalized is not None:
             return normalized
-
-    prediction_lower = prediction.lower()
-    earliest_pos = None
-    earliest_label = None
-    for label in _TASK_LABELS[task]:
-        label_lower = label.lower()
-        pattern = re.compile(rf"(?<![a-z0-9_]){re.escape(label_lower)}(?![a-z0-9_])")
-        match = pattern.search(prediction_lower)
-        if match is None:
-            continue
-        if earliest_pos is None or match.start() < earliest_pos:
-            earliest_pos = match.start()
-            earliest_label = label
-    return earliest_label
+    return None
 
 
 class SmallDataSFTTrainer(SFTTrainer):
@@ -140,6 +129,35 @@ class SmallDataSFTTrainer(SFTTrainer):
 
         return predictions
 
+    def _assert_no_eval_prompt_leakage(self) -> None:
+        if self.raw_eval_dataset is None:
+            return
+
+        completion_leak_indices: list[int] = []
+        teacher_prompt_leak_indices: list[int] = []
+        for idx, row in enumerate(self.raw_eval_dataset):
+            prompt_text = str(row.get("prompt", ""))
+
+            completion_text = row.get("completion")
+            if isinstance(completion_text, str):
+                completion_text = completion_text.strip()
+                if completion_text and completion_text in prompt_text:
+                    completion_leak_indices.append(idx)
+
+            teacher_prompt_text = row.get("teacher_prompt")
+            if isinstance(teacher_prompt_text, str):
+                teacher_prompt_text = teacher_prompt_text.strip()
+                if teacher_prompt_text and teacher_prompt_text == prompt_text:
+                    teacher_prompt_leak_indices.append(idx)
+
+        if completion_leak_indices or teacher_prompt_leak_indices:
+            details: list[str] = []
+            if completion_leak_indices:
+                details.append(f"completion text found in prompt at indices {completion_leak_indices[:10]}")
+            if teacher_prompt_leak_indices:
+                details.append(f"prompt equals teacher_prompt at indices {teacher_prompt_leak_indices[:10]}")
+            raise ValueError("Potential evaluation leakage detected: " + "; ".join(details))
+
     def _log_eval_input_examples(
         self,
         predictions: list[str],
@@ -171,7 +189,33 @@ class SmallDataSFTTrainer(SFTTrainer):
                     "gold_label": references[idx] if idx < len(references) else str(row["eval_label"]),
                 }
             )
-        wandb.log({"eval_input_examples": wandb.Table(dataframe=pd.DataFrame(rows))})
+        max_attempts = 3
+        wait_seconds = [1, 2, 5]
+        table = wandb.Table(dataframe=pd.DataFrame(rows))
+        last_error: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                wandb.log({"eval_input_examples": table})
+                return
+            except Exception as exc:  # pragma: no cover - network/runtime specific
+                last_error = exc
+                print(
+                    f"[SmallDataSFTTrainer] Failed to log eval_input_examples to W&B "
+                    f"(attempt {attempt}/{max_attempts}): {exc}",
+                    file=sys.stderr,
+                )
+                if attempt < max_attempts:
+                    run_id = getattr(wandb.run, "id", "<unknown>")
+                    print(
+                        f"[SmallDataSFTTrainer] Retrying with existing W&B run context (run_id={run_id}).",
+                        file=sys.stderr,
+                    )
+                    time.sleep(wait_seconds[attempt - 1])
+        print(
+            "[SmallDataSFTTrainer] Continuing training without eval_input_examples "
+            f"after {max_attempts} failed attempts: {last_error}",
+            file=sys.stderr,
+        )
 
     def evaluate(
         self,
@@ -184,6 +228,7 @@ class SmallDataSFTTrainer(SFTTrainer):
         if self.raw_eval_dataset is None or len(self.raw_eval_dataset) == 0:
             return metrics
 
+        self._assert_no_eval_prompt_leakage()
         predictions = self._generate_eval_predictions()
         references = [str(row["eval_label"]) for row in self.raw_eval_dataset]
         tasks = [str(row["eval_task"]) for row in self.raw_eval_dataset]

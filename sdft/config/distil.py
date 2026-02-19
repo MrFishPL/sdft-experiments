@@ -310,10 +310,6 @@ class DistilConfig(TrainingArguments):
             "* gradient_accumulation_steps) must be evenly divisible by this value."
         },
     )
-    eval_num_generations: Optional[int] = field(
-        default=1,
-        metadata={"help": "Number of generations to sample during evaluation."},
-    )
     max_completion_length: Optional[int] = field(
         default=256,
         metadata={"help": "Maximum length of the generated completion."},
@@ -705,17 +701,6 @@ class DistilConfig(TrainingArguments):
             raise ValueError(
                 "'generation_batch_size' and 'steps_per_generation' can not be both configured at the same time"
             )
-
-        if self.eval_num_generations is None or self.eval_num_generations <= 0:
-            raise ValueError(f"eval_num_generations must be >= 1, got {self.eval_num_generations}.")
-
-        if self.do_eval and self.eval_strategy != "no":
-            # Just ensure the value is divisible by the global batch size
-            if (self.per_device_eval_batch_size * num_processes) % self.eval_num_generations != 0:
-                raise ValueError(
-                    f"The global eval batch size ({self.per_device_eval_batch_size} * {num_processes}) must be "
-                    f"divisible by eval_num_generations ({self.eval_num_generations})."
-                )
 
         # The generation batch must contain full prompt groups (no partials), so it must be divisible by
         # num_generations.

@@ -17,7 +17,6 @@ class DistilConfigTest(unittest.TestCase):
         cfg = DistilConfig(**self._base_kwargs())
         self.assertEqual(cfg.steps_per_generation, 3)
         self.assertEqual(cfg.generation_batch_size, 6)
-        self.assertEqual(cfg.eval_num_generations, 1)
         self.assertTrue(cfg.bf16)
 
     def test_generation_batch_size_derives_steps_per_generation(self):
@@ -27,6 +26,15 @@ class DistilConfigTest(unittest.TestCase):
     def test_steps_per_generation_derives_generation_batch_size(self):
         cfg = DistilConfig(**self._base_kwargs(), steps_per_generation=5)
         self.assertEqual(cfg.generation_batch_size, 10)
+
+    def test_large_num_generations_with_explicit_generation_batch_size(self):
+        kwargs = self._base_kwargs()
+        kwargs["per_device_train_batch_size"] = 1
+        kwargs["gradient_accumulation_steps"] = 1
+        kwargs["num_generations"] = 256
+        cfg = DistilConfig(**kwargs, generation_batch_size=256)
+        self.assertEqual(cfg.generation_batch_size, 256)
+        self.assertEqual(cfg.steps_per_generation, 256)
 
     def test_rejects_both_generation_batch_size_and_steps_per_generation(self):
         with self.assertRaisesRegex(ValueError, "can not be both configured"):
@@ -41,29 +49,6 @@ class DistilConfigTest(unittest.TestCase):
         kwargs["num_generations"] = 4
         with self.assertRaisesRegex(ValueError, "must be divisible by num_generations"):
             DistilConfig(**kwargs)
-
-    def test_eval_divisibility_uses_eval_num_generations(self):
-        kwargs = self._base_kwargs()
-        kwargs["num_generations"] = 8
-        cfg = DistilConfig(
-            **kwargs,
-            do_eval=True,
-            eval_strategy="steps",
-            per_device_eval_batch_size=3,
-            generation_batch_size=8,
-            eval_num_generations=1,
-        )
-        self.assertEqual(cfg.eval_num_generations, 1)
-
-    def test_rejects_eval_batch_not_divisible_by_eval_num_generations(self):
-        with self.assertRaisesRegex(ValueError, "eval_num_generations"):
-            DistilConfig(
-                **self._base_kwargs(),
-                do_eval=True,
-                eval_strategy="steps",
-                per_device_eval_batch_size=3,
-                eval_num_generations=2,
-            )
 
     def test_scale_rewards_boolean_is_normalized(self):
         cfg_true = DistilConfig(**self._base_kwargs(), scale_rewards=True)
