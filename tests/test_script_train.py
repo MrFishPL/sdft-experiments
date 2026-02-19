@@ -23,10 +23,14 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertTrue(args.final_eval)
         self.assertIsNone(args.log_input_examples)
         self.assertTrue(args.log_examples_eval_only)
-        self.assertEqual(args.max_steps, -1)
+        self.assertEqual(args.target_updates, 1000)
+        self.assertEqual(args.num_loss_tokens_to_skip, 3)
+        self.assertEqual(args.max_grad_norm, 1.0)
         self.assertIsNone(args.fewshot_indices_file)
         self.assertIsNone(args.fewshot_num_examples)
         self.assertIsNone(args.distil_generation_batch_size)
+        self.assertFalse(args.tooluse_fewshot_one_per_name)
+        self.assertEqual(args.distil_alpha, 1.0)
 
     def test_parse_args_overrides(self):
         with patch.object(
@@ -43,14 +47,21 @@ class ScriptTrainTest(unittest.TestCase):
                 "--no-final_eval",
                 "--log_input_examples",
                 "--no-log_examples_eval_only",
-                "--max_steps",
+                "--target_updates",
                 "5",
+                "--num_loss_tokens_to_skip",
+                "7",
+                "--max_grad_norm",
+                "3.5",
                 "--fewshot_indices_file",
                 "data/superglue_fewshot_5shot_curated.json",
                 "--fewshot_num_examples",
                 "5",
                 "--distil_generation_batch_size",
                 "64",
+                "--tooluse_fewshot_one_per_name",
+                "--distil_alpha",
+                "0.5",
             ],
         ):
             args = train_script.parse_args()
@@ -62,16 +73,31 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertFalse(args.final_eval)
         self.assertTrue(args.log_input_examples)
         self.assertFalse(args.log_examples_eval_only)
-        self.assertEqual(args.max_steps, 5)
+        self.assertEqual(args.target_updates, 5)
+        self.assertEqual(args.num_loss_tokens_to_skip, 7)
+        self.assertEqual(args.max_grad_norm, 3.5)
         self.assertEqual(args.fewshot_indices_file, "data/superglue_fewshot_5shot_curated.json")
         self.assertEqual(args.fewshot_num_examples, 5)
         self.assertEqual(args.distil_generation_batch_size, 64)
+        self.assertTrue(args.tooluse_fewshot_one_per_name)
+        self.assertEqual(args.distil_alpha, 0.5)
+
+    def test_build_distil_config_resolves_target_updates_with_num_generations(self):
+        args = self._base_args(method="sdft", task="wsc")
+        args.target_updates = 1001
+        args.num_generations = 16
+        with (
+            patch.object(train_script, "_vllm_runtime_usable", return_value=True),
+            patch.object(train_script, "DistilConfig", side_effect=lambda **kwargs: SimpleNamespace(**kwargs)),
+        ):
+            cfg = train_script._build_distil_config(args)
+
+        self.assertEqual(cfg.max_steps, 63)
 
     def _base_args(self, *, method: str, task: str) -> SimpleNamespace:
         return SimpleNamespace(
             method=method,
             learning_rate=1e-5,
-            num_train_epochs=2,
             num_prompts_per_batch=4,
             task=task,
             per_device_train_batch_size=2,
@@ -88,7 +114,9 @@ class ScriptTrainTest(unittest.TestCase):
             max_completion_length=128,
             num_generations=4,
             warmup_steps=25,
-            max_steps=-1,
+            num_loss_tokens_to_skip=3,
+            max_grad_norm=1.0,
+            target_updates=1000,
             run_name="run-name",
             use_vllm=True,
             eval_deterministic=True,
@@ -100,6 +128,8 @@ class ScriptTrainTest(unittest.TestCase):
             fewshot_indices_file=None,
             fewshot_num_examples=None,
             distil_generation_batch_size=None,
+            tooluse_fewshot_one_per_name=False,
+            distil_alpha=1.0,
         )
 
     def test_main_dispatches_sdft_and_runs_eval_before_after_train(self):
@@ -161,6 +191,7 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertTrue(cfg.eval_deterministic)
         self.assertTrue(cfg.log_completions)  # default True for small-data tasks
         self.assertTrue(cfg.log_examples_eval_only)
+        self.assertEqual(cfg.max_steps, 250)
 
     def test_main_dispatches_sft_and_uses_small_data_trainer(self):
         parsed = self._base_args(method="sft", task="wsc")
@@ -188,6 +219,7 @@ class ScriptTrainTest(unittest.TestCase):
             patch.object(train_script.AutoModelForCausalLM, "from_pretrained", return_value=student_model) as model_mock,
             patch.object(train_script.AutoTokenizer, "from_pretrained", return_value=tokenizer),
             patch.object(train_script, "load_superglue_small_sft_dataset", return_value=(train_dataset, eval_dataset)) as sft_data_mock,
+            patch.object(train_script, "load_tooluse_sft_dataset") as tooluse_sft_data_mock,
             patch.object(train_script, "load_tooluse_dataset") as tooluse_data_mock,
             patch.object(train_script, "load_superglue_small_dataset") as superglue_data_mock,
             patch.object(train_script, "SFTConfig", side_effect=lambda **kwargs: SimpleNamespace(**kwargs)),
@@ -199,6 +231,7 @@ class ScriptTrainTest(unittest.TestCase):
 
         self.assertEqual(model_mock.call_count, 1)
         sft_data_mock.assert_called_once_with(task="wsc", seed=11, train_indices=None)
+        tooluse_sft_data_mock.assert_not_called()
         tooluse_data_mock.assert_not_called()
         superglue_data_mock.assert_not_called()
         distil_trainer_mock.assert_not_called()
@@ -210,6 +243,7 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertTrue(kwargs["eval_deterministic"])
         self.assertTrue(kwargs["log_input_examples"])
         self.assertTrue(kwargs["log_examples_eval_only"])
+        self.assertEqual(kwargs["args"].max_steps, 1000)
 
     def test_main_skips_eval_hooks_when_disabled(self):
         parsed = self._base_args(method="sdft", task="tooluse")
@@ -249,10 +283,41 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertEqual(DummyDistilTrainer.evaluate_calls, 0)
         self.assertTrue(DummyDistilTrainer.trained)
 
-    def test_main_rejects_tooluse_for_sft(self):
+    def test_main_supports_tooluse_for_sft(self):
         parsed = self._base_args(method="sft", task="tooluse")
+        train_dataset = [{"prompt": "p", "completion": "c", "teacher_prompt": "tp"}]
+        eval_dataset = [{"prompt": "p", "completion": "c", "teacher_prompt": "tp", "golden_answer": []}]
+
+        class DummySFTTrainer:
+            trained = False
+
+            def __init__(self, **kwargs):
+                pass
+
+            def evaluate(self):
+                return None
+
+            def train(self):
+                DummySFTTrainer.trained = True
+
+        with (
+            patch.object(train_script, "parse_args", return_value=parsed),
+            patch.object(train_script.AutoModelForCausalLM, "from_pretrained", return_value=object()),
+            patch.object(train_script.AutoTokenizer, "from_pretrained", return_value=SimpleNamespace(pad_token=None, eos_token="</s>")),
+            patch.object(train_script, "load_tooluse_sft_dataset", return_value=(train_dataset, eval_dataset)) as tooluse_sft_data_mock,
+            patch.object(train_script, "SFTConfig", side_effect=lambda **kwargs: SimpleNamespace(**kwargs)),
+            patch.object(train_script, "SmallDataSFTTrainer", DummySFTTrainer),
+        ):
+            train_script.main()
+
+        tooluse_sft_data_mock.assert_called_once_with(seed=11, train_indices=None)
+        self.assertTrue(DummySFTTrainer.trained)
+
+    def test_main_rejects_tooluse_one_per_name_for_non_tooluse_tasks(self):
+        parsed = self._base_args(method="sdft", task="wsc")
+        parsed.tooluse_fewshot_one_per_name = True
         with patch.object(train_script, "parse_args", return_value=parsed):
-            with self.assertRaisesRegex(ValueError, "method=sft is only supported"):
+            with self.assertRaisesRegex(ValueError, "supported only when --task=tooluse"):
                 train_script.main()
 
     def test_main_passes_fewshot_indices_and_distil_generation_batch_size(self):
@@ -300,6 +365,7 @@ class ScriptTrainTest(unittest.TestCase):
                 patch.object(train_script, "_vllm_runtime_usable", return_value=True),
                 patch.object(train_script, "DistilConfig", side_effect=lambda **kwargs: SimpleNamespace(**kwargs)),
                 patch.object(train_script, "DistilTrainer", DummyDistilTrainer),
+                patch.object(train_script, "load_tooluse_one_per_name_indices", return_value=[]),
             ):
                 train_script.main()
 

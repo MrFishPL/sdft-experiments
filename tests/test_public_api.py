@@ -2,7 +2,13 @@ import unittest
 
 import sdft
 from sdft.config import DistilConfig
-from sdft.data import load_superglue_small_dataset, load_superglue_small_sft_dataset, load_tooluse_dataset
+from sdft.data import (
+    load_superglue_small_dataset,
+    load_superglue_small_sft_dataset,
+    load_tooluse_dataset,
+    load_tooluse_one_per_name_indices,
+    load_tooluse_sft_dataset,
+)
 from sdft.eval import score_small_data_predictions, score_tooluse_predictions
 from sdft.trainers import DistilTrainer, MemoryEfficientSyncRefModelCallback, SmallDataSFTTrainer
 
@@ -18,7 +24,16 @@ class PublicApiTest(unittest.TestCase):
         from sdft.trainers import __all__ as trainers_all
 
         self.assertEqual(config_all, ["DistilConfig"])
-        self.assertEqual(data_all, ["load_tooluse_dataset", "load_superglue_small_dataset", "load_superglue_small_sft_dataset"])
+        self.assertEqual(
+            data_all,
+            [
+                "load_tooluse_dataset",
+                "load_tooluse_sft_dataset",
+                "load_tooluse_one_per_name_indices",
+                "load_superglue_small_dataset",
+                "load_superglue_small_sft_dataset",
+            ],
+        )
         self.assertEqual(eval_all, ["score_tooluse_predictions", "score_small_data_predictions"])
         self.assertIn("DistilTrainer", trainers_all)
         self.assertIn("SmallDataSFTTrainer", trainers_all)
@@ -26,6 +41,8 @@ class PublicApiTest(unittest.TestCase):
 
     def test_imported_symbols_are_resolvable(self):
         self.assertTrue(callable(load_tooluse_dataset))
+        self.assertTrue(callable(load_tooluse_sft_dataset))
+        self.assertTrue(callable(load_tooluse_one_per_name_indices))
         self.assertTrue(callable(load_superglue_small_dataset))
         self.assertTrue(callable(load_superglue_small_sft_dataset))
         self.assertTrue(callable(score_tooluse_predictions))

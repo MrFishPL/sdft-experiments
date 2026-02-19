@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -12,10 +13,17 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from sdft.config import DistilConfig
-from sdft.data import load_superglue_small_dataset, load_superglue_small_sft_dataset, load_tooluse_dataset
+from sdft.data import (
+    load_superglue_small_dataset,
+    load_superglue_small_sft_dataset,
+    load_tooluse_dataset,
+    load_tooluse_one_per_name_indices,
+    load_tooluse_sft_dataset,
+)
 from sdft.trainers import DistilTrainer, SmallDataSFTTrainer
 
 _SMALL_DATA_TASKS = {"copa", "cb", "wsc"}
+_ALL_TASKS = {"tooluse", "copa", "cb", "wsc"}
 
 
 def _vllm_runtime_usable() -> bool:
@@ -49,7 +57,6 @@ def parse_args():
         help="Training method: self-distillation (sdft) or classic supervised fine-tuning (sft).",
     )
     parser.add_argument("--learning_rate", type=float, default=1e-5, help="Learning rate")
-    parser.add_argument("--num_train_epochs", type=int, default=2, help="Number of training epochs")
     parser.add_argument("--num_prompts_per_batch", type=int, default=32, help="Number of prompts per batch")
     parser.add_argument(
         "--task",
@@ -74,7 +81,7 @@ def parse_args():
         "--eval_strategy",
         type=str,
         default="steps",
-        choices=["no", "steps", "epoch"],
+        choices=["no", "steps"],
         help="Evaluation scheduling strategy",
     )
     parser.add_argument("--per_device_eval_batch_size", type=int, default=8, help="Eval micro-batch size")
@@ -88,7 +95,28 @@ def parse_args():
         help="Number of sampled completions per prompt group.",
     )
     parser.add_argument("--warmup_steps", type=int, default=10, help="Warmup steps")
-    parser.add_argument("--max_steps", type=int, default=-1, help="Maximum training steps (overrides epochs when > 0)")
+    parser.add_argument(
+        "--num_loss_tokens_to_skip",
+        type=int,
+        default=3,
+        help="Number of initial completion tokens to mask from distillation loss.",
+    )
+    parser.add_argument(
+        "--max_grad_norm",
+        type=float,
+        default=1.0,
+        help="Gradient clipping value (max L2 norm).",
+    )
+    parser.add_argument(
+        "--target_updates",
+        type=int,
+        default=1000,
+        help=(
+            "Training budget in update units. "
+            "For SFT this equals optimizer steps. "
+            "For SDFT, optimizer steps are ceil(target_updates / num_generations)."
+        ),
+    )
     parser.add_argument("--run_name", type=str, default=None, help="WandB run name")
     parser.add_argument(
         "--use_vllm",
@@ -150,6 +178,18 @@ def parse_args():
         default=None,
         help="Optional Distil generation_batch_size override (SDFT only).",
     )
+    parser.add_argument(
+        "--tooluse_fewshot_one_per_name",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="For task=tooluse, select one deterministic train sample per unique tool name.",
+    )
+    parser.add_argument(
+        "--distil_alpha",
+        type=float,
+        default=1.0,
+        help="Distillation divergence interpolation alpha (1.0 = reverse KL, 0.0 = forward KL).",
+    )
     return parser.parse_args()
 
 
@@ -172,11 +212,57 @@ def _resolve_log_input_examples(args: argparse.Namespace) -> bool:
     return args.task in _SMALL_DATA_TASKS
 
 
+def _resolve_max_grad_norm(args: argparse.Namespace) -> float:
+    if args.max_grad_norm <= 0:
+        raise ValueError("max_grad_norm must be > 0")
+    return args.max_grad_norm
+
+
+def _resolve_num_loss_tokens_to_skip(args: argparse.Namespace) -> int:
+    if args.num_loss_tokens_to_skip < 0:
+        raise ValueError("num_loss_tokens_to_skip must be >= 0")
+    return args.num_loss_tokens_to_skip
+
+
+def _resolve_distil_alpha(args: argparse.Namespace) -> float:
+    if args.distil_alpha < 0.0 or args.distil_alpha > 1.0:
+        raise ValueError("distil_alpha must be within [0.0, 1.0]")
+    return args.distil_alpha
+
+
+def _resolve_target_updates(args: argparse.Namespace) -> int:
+    if args.target_updates <= 0:
+        raise ValueError("target_updates must be > 0")
+    return args.target_updates
+
+
+def _resolve_max_steps(args: argparse.Namespace) -> int:
+    target_updates = _resolve_target_updates(args)
+    if args.method == "sdft":
+        if args.num_generations <= 0:
+            raise ValueError("num_generations must be > 0")
+        return math.ceil(target_updates / args.num_generations)
+    return target_updates
+
+
 def _load_fewshot_train_indices(args: argparse.Namespace) -> list[int] | None:
+    if args.tooluse_fewshot_one_per_name:
+        if args.task != "tooluse":
+            raise ValueError("--tooluse_fewshot_one_per_name is supported only when --task=tooluse.")
+        if args.fewshot_indices_file is not None:
+            raise ValueError("Use either --fewshot_indices_file or --tooluse_fewshot_one_per_name, not both.")
+        train_indices = load_tooluse_one_per_name_indices()
+        if args.fewshot_num_examples is not None and len(train_indices) != args.fewshot_num_examples:
+            raise ValueError(
+                f"Task '{args.task}' selected {len(train_indices)} examples, "
+                f"but --fewshot_num_examples={args.fewshot_num_examples}."
+            )
+        return train_indices
+
     if args.fewshot_indices_file is None:
         return None
-    if args.task not in _SMALL_DATA_TASKS:
-        raise ValueError("--fewshot_indices_file is supported only for low-data tasks: copa, cb, wsc.")
+    if args.task not in _ALL_TASKS:
+        raise ValueError("--fewshot_indices_file is supported only for tasks: tooluse, copa, cb, wsc.")
 
     path = Path(args.fewshot_indices_file)
     if not path.exists():
@@ -206,6 +292,10 @@ def _build_distil_config(args: argparse.Namespace) -> DistilConfig:
     do_eval = args.eval_strategy != "no"
     use_vllm = args.use_vllm and _vllm_runtime_usable()
     gradient_accumulation_steps = _resolve_gradient_accumulation_steps(args)
+    max_grad_norm = _resolve_max_grad_norm(args)
+    num_loss_tokens_to_skip = _resolve_num_loss_tokens_to_skip(args)
+    distil_alpha = _resolve_distil_alpha(args)
+    max_steps = _resolve_max_steps(args)
     log_input_examples = _resolve_log_input_examples(args)
 
     config_kwargs = {
@@ -231,10 +321,10 @@ def _build_distil_config(args: argparse.Namespace) -> DistilConfig:
         "max_completion_length": args.max_completion_length,
         "num_generations": args.num_generations,
         "eval_deterministic": args.eval_deterministic,
-        "num_train_epochs": args.num_train_epochs,
-        "max_steps": args.max_steps,
+        "max_steps": max_steps,
         "save_steps": args.save_steps,
-        "max_grad_norm": 1,
+        "alpha": distil_alpha,
+        "max_grad_norm": max_grad_norm,
         "weight_decay": 0.0,
         "optim": "adamw_torch",
         "report_to": "wandb",
@@ -246,7 +336,7 @@ def _build_distil_config(args: argparse.Namespace) -> DistilConfig:
         "ref_model_sync_steps": 1,
         "ref_model_mixup_alpha": args.ref_model_mixup_alpha,
         "vllm_importance_sampling_correction": True,
-        "num_loss_tokens_to_skip": 3,
+        "num_loss_tokens_to_skip": num_loss_tokens_to_skip,
         "do_eval": do_eval,
         "eval_strategy": args.eval_strategy,
     }
@@ -271,7 +361,7 @@ def _build_distil_config(args: argparse.Namespace) -> DistilConfig:
             {
                 "lr_scheduler_type": "cosine",
                 "warmup_steps": 10,
-                "max_grad_norm": 1,
+                "max_grad_norm": max_grad_norm,
                 "weight_decay": 0.0,
                 "bf16": True,
                 "optim": "adamw_torch",
@@ -287,6 +377,8 @@ def _build_distil_config(args: argparse.Namespace) -> DistilConfig:
 def _build_sft_config(args: argparse.Namespace) -> SFTConfig:
     do_eval = args.eval_strategy != "no"
     gradient_accumulation_steps = _resolve_gradient_accumulation_steps(args)
+    max_grad_norm = _resolve_max_grad_norm(args)
+    max_steps = _resolve_max_steps(args)
     config_kwargs = {
         "seed": args.seed,
         "learning_rate": args.learning_rate,
@@ -300,10 +392,9 @@ def _build_sft_config(args: argparse.Namespace) -> SFTConfig:
         "per_device_train_batch_size": args.per_device_train_batch_size,
         "per_device_eval_batch_size": args.per_device_eval_batch_size,
         "gradient_accumulation_steps": gradient_accumulation_steps,
-        "num_train_epochs": args.num_train_epochs,
-        "max_steps": args.max_steps,
+        "max_steps": max_steps,
         "save_steps": args.save_steps,
-        "max_grad_norm": 1,
+        "max_grad_norm": max_grad_norm,
         "weight_decay": 0.0,
         "optim": "adamw_torch",
         "report_to": "wandb",
@@ -322,7 +413,9 @@ def _build_sft_config(args: argparse.Namespace) -> SFTConfig:
                 "eval_steps": args.eval_steps,
                 "save_strategy": args.eval_strategy,
                 "load_best_model_at_end": True,
-                "metric_for_best_model": "eval_small_data_accuracy",
+                "metric_for_best_model": "eval_small_data_accuracy"
+                if args.task in _SMALL_DATA_TASKS
+                else "eval_tooluse_strict_match",
                 "greater_is_better": True,
             }
         )
@@ -332,7 +425,7 @@ def _build_sft_config(args: argparse.Namespace) -> SFTConfig:
             {
                 "lr_scheduler_type": "cosine",
                 "warmup_steps": 10,
-                "max_grad_norm": 1,
+                "max_grad_norm": max_grad_norm,
                 "weight_decay": 0.0,
                 "bf16": True,
                 "optim": "adamw_torch",
@@ -344,8 +437,6 @@ def _build_sft_config(args: argparse.Namespace) -> SFTConfig:
 
 def main() -> None:
     args = parse_args()
-    if args.method == "sft" and args.task == "tooluse":
-        raise ValueError("method=sft is only supported for low-data tasks: copa, cb, wsc.")
     if args.distil_generation_batch_size is not None and args.method != "sdft":
         raise ValueError("--distil_generation_batch_size is supported only when --method=sdft.")
     fewshot_train_indices = _load_fewshot_train_indices(args)
@@ -364,14 +455,20 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     if args.method == "sft":
-        train_dataset, eval_dataset = load_superglue_small_sft_dataset(
-            task=args.task,
-            seed=args.seed,
-            train_indices=fewshot_train_indices,
-        )
+        if args.task == "tooluse":
+            train_dataset, eval_dataset = load_tooluse_sft_dataset(
+                seed=args.seed,
+                train_indices=fewshot_train_indices,
+            )
+        else:
+            train_dataset, eval_dataset = load_superglue_small_sft_dataset(
+                task=args.task,
+                seed=args.seed,
+                train_indices=fewshot_train_indices,
+            )
     else:
         if args.task == "tooluse":
-            train_dataset, eval_dataset = load_tooluse_dataset(args.seed)
+            train_dataset, eval_dataset = load_tooluse_dataset(args.seed, train_indices=fewshot_train_indices)
         else:
             train_dataset, eval_dataset = load_superglue_small_dataset(
                 task=args.task,

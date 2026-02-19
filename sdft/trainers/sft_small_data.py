@@ -6,7 +6,7 @@ from typing import Any, Optional
 import torch
 from trl import SFTTrainer
 
-from sdft.eval import score_small_data_predictions
+from sdft.eval import score_small_data_predictions, score_tooluse_predictions
 
 try:
     import wandb
@@ -20,6 +20,11 @@ _TASK_LABELS = {
 }
 _FINAL_LABEL_PATTERN = re.compile(r"final\s*label\s*:\s*([^\n\r]+)", re.IGNORECASE)
 _NON_ALNUM_PATTERN = re.compile(r"[^a-z0-9_ ]+")
+_EVAL_PROMPT_LEAKAGE_MARKERS = (
+    "reference for this example:",
+    "the correct label is:",
+    "the correct tool call is:",
+)
 
 
 def _normalize_task(task: str) -> str:
@@ -50,6 +55,20 @@ def _parse_prediction_label(prediction: str, task: str) -> str | None:
         if normalized is not None:
             return normalized
     return None
+
+
+def _non_empty_stripped_lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _contains_line_block(haystack: list[str], needle: list[str]) -> bool:
+    if not needle or len(needle) > len(haystack):
+        return False
+    block_len = len(needle)
+    for start in range(0, len(haystack) - block_len + 1):
+        if haystack[start : start + block_len] == needle:
+            return True
+    return False
 
 
 class SmallDataSFTTrainer(SFTTrainer):
@@ -135,13 +154,20 @@ class SmallDataSFTTrainer(SFTTrainer):
 
         completion_leak_indices: list[int] = []
         teacher_prompt_leak_indices: list[int] = []
+        marker_leak_indices: list[int] = []
         for idx, row in enumerate(self.raw_eval_dataset):
             prompt_text = str(row.get("prompt", ""))
+            prompt_lines = _non_empty_stripped_lines(prompt_text)
+            normalized_prompt_lower = prompt_text.lower()
+
+            if any(marker in normalized_prompt_lower for marker in _EVAL_PROMPT_LEAKAGE_MARKERS):
+                marker_leak_indices.append(idx)
 
             completion_text = row.get("completion")
             if isinstance(completion_text, str):
                 completion_text = completion_text.strip()
-                if completion_text and completion_text in prompt_text:
+                completion_lines = _non_empty_stripped_lines(completion_text)
+                if completion_lines and _contains_line_block(prompt_lines, completion_lines):
                     completion_leak_indices.append(idx)
 
             teacher_prompt_text = row.get("teacher_prompt")
@@ -150,12 +176,16 @@ class SmallDataSFTTrainer(SFTTrainer):
                 if teacher_prompt_text and teacher_prompt_text == prompt_text:
                     teacher_prompt_leak_indices.append(idx)
 
-        if completion_leak_indices or teacher_prompt_leak_indices:
+        if completion_leak_indices or teacher_prompt_leak_indices or marker_leak_indices:
             details: list[str] = []
             if completion_leak_indices:
-                details.append(f"completion text found in prompt at indices {completion_leak_indices[:10]}")
+                details.append(f"completion line block found in prompt at indices {completion_leak_indices[:10]}")
             if teacher_prompt_leak_indices:
                 details.append(f"prompt equals teacher_prompt at indices {teacher_prompt_leak_indices[:10]}")
+            if marker_leak_indices:
+                details.append(
+                    f"teacher/reference leakage markers found in prompt at indices {marker_leak_indices[:10]}"
+                )
             raise ValueError("Potential evaluation leakage detected: " + "; ".join(details))
 
     def _log_eval_input_examples(
@@ -217,6 +247,63 @@ class SmallDataSFTTrainer(SFTTrainer):
             file=sys.stderr,
         )
 
+    def _log_eval_input_examples_tooluse(
+        self,
+        predictions: list[str],
+        references: list[list[dict[str, Any]]],
+    ) -> None:
+        if not self.log_input_examples or self.raw_eval_dataset is None:
+            return
+        if not self.is_world_process_zero():
+            return
+        if not self.args.report_to or "wandb" not in self.args.report_to:
+            return
+        if wandb is None or wandb.run is None:
+            return
+
+        import pandas as pd
+
+        rows = []
+        for idx, row in enumerate(self.raw_eval_dataset):
+            prediction = predictions[idx] if idx < len(predictions) else ""
+            reference = references[idx] if idx < len(references) else []
+            rows.append(
+                {
+                    "step": str(self.state.global_step),
+                    "student_input": str(row["prompt"]),
+                    "teacher_input": str(row.get("teacher_prompt", "")),
+                    "completion": prediction,
+                    "gold_tool_calls": str(reference),
+                }
+            )
+        max_attempts = 3
+        wait_seconds = [1, 2, 5]
+        table = wandb.Table(dataframe=pd.DataFrame(rows))
+        last_error: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                wandb.log({"eval_input_examples": table})
+                return
+            except Exception as exc:  # pragma: no cover - network/runtime specific
+                last_error = exc
+                print(
+                    f"[SmallDataSFTTrainer] Failed to log eval_input_examples to W&B "
+                    f"(attempt {attempt}/{max_attempts}): {exc}",
+                    file=sys.stderr,
+                )
+                if attempt < max_attempts:
+                    run_id = getattr(wandb.run, "id", "<unknown>")
+                    print(
+                        f"[SmallDataSFTTrainer] Retrying with existing W&B run context (run_id={run_id}).",
+                        file=sys.stderr,
+                    )
+                    time.sleep(wait_seconds[attempt - 1])
+        print(
+            "[SmallDataSFTTrainer] Continuing training without eval_input_examples "
+            f"after {max_attempts} failed attempts: {last_error}",
+            file=sys.stderr,
+        )
+
     def evaluate(
         self,
         eval_dataset=None,
@@ -230,16 +317,30 @@ class SmallDataSFTTrainer(SFTTrainer):
 
         self._assert_no_eval_prompt_leakage()
         predictions = self._generate_eval_predictions()
-        references = [str(row["eval_label"]) for row in self.raw_eval_dataset]
-        tasks = [str(row["eval_task"]) for row in self.raw_eval_dataset]
+        if all("eval_label" in row and "eval_task" in row for row in self.raw_eval_dataset):
+            references = [str(row["eval_label"]) for row in self.raw_eval_dataset]
+            tasks = [str(row["eval_task"]) for row in self.raw_eval_dataset]
+            scored = score_small_data_predictions(predictions, references, tasks)
+            extra_metrics = {
+                f"{metric_key_prefix}_small_data_accuracy": sum(scored["accuracy"]) / len(scored["accuracy"]),
+                f"{metric_key_prefix}_small_data_parse_success": sum(scored["parse_success"]) / len(scored["parse_success"]),
+            }
+            metrics.update(extra_metrics)
+            self.log(extra_metrics)
+            self._log_eval_input_examples(predictions=predictions, references=references, tasks=tasks)
+            return metrics
 
-        scored = score_small_data_predictions(predictions, references, tasks)
-        extra_metrics = {
-            f"{metric_key_prefix}_small_data_accuracy": sum(scored["accuracy"]) / len(scored["accuracy"]),
-            f"{metric_key_prefix}_small_data_parse_success": sum(scored["parse_success"]) / len(scored["parse_success"]),
-        }
-        metrics.update(extra_metrics)
-        self.log(extra_metrics)
-        self._log_eval_input_examples(predictions=predictions, references=references, tasks=tasks)
+        if all("golden_answer" in row for row in self.raw_eval_dataset):
+            references = [row.get("golden_answer", []) for row in self.raw_eval_dataset]
+            scored = score_tooluse_predictions(predictions, references)
+            extra_metrics = {
+                f"{metric_key_prefix}_tooluse_strict_match": sum(scored["strict_match"]) / len(scored["strict_match"]),
+                f"{metric_key_prefix}_tooluse_parse_success": sum(scored["parse_success"]) / len(scored["parse_success"]),
+                f"{metric_key_prefix}_tooluse_action_name_match": sum(scored["action_name_match"]) / len(scored["action_name_match"]),
+            }
+            metrics.update(extra_metrics)
+            self.log(extra_metrics)
+            self._log_eval_input_examples_tooluse(predictions=predictions, references=references)
+            return metrics
 
         return metrics

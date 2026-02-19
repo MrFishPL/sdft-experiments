@@ -13,11 +13,11 @@ _TEACHER_PROMPT_TEMPLATE = Template(
     """
 $prompt_text
 
-This is an example answer with reasoning:
-$output_text
+Reference for this example:
+The correct label is: $correct_label
 
-Now answer with a response of your own.
-Remember: your last line must be exactly `Final Label: <label>`.
+Write your own response with a clear reasoning process.
+Your last line must be exactly: Final Label: $correct_label
 """.strip()
 )
 
@@ -87,65 +87,13 @@ def _render_student_prompt(task: str, example: dict) -> str:
     raise ValueError(f"Unsupported task '{task}'.")
 
 
-def _render_demonstration(task: str, example: dict, label_name: str) -> str:
-    if task == "copa":
-        if label_name == "choice1":
-            answer_text = example["choice1"]
-        else:
-            answer_text = example["choice2"]
-        return (
-            "Reasoning: Compare both options with the requested causal relation and pick the one that best fits.\n"
-            f"Reasoning: The selected option is more plausible here: {answer_text}\n"
-            f"Final Label: {label_name}"
-        )
-
-    if task == "cb":
-        return (
-            "Reasoning: Check whether the hypothesis is fully supported, contradicted, or under-specified by the premise.\n"
-            f"Reasoning: The correct relation is {label_name}.\n"
-            f"Final Label: {label_name}"
-        )
-
-    if task == "wsc":
-        relation = "does" if label_name == "True" else "does not"
-        return (
-            "Reasoning: Resolve whether span2 refers back to span1 in context.\n"
-            f"Reasoning: In this sentence, span2 {relation} refer to span1.\n"
-            f"Final Label: {label_name}"
-        )
-
-    raise ValueError(f"Unsupported task '{task}'.")
-
-
 def _render_gold_completion(task: str, example: dict, label_name: str) -> str:
-    if task == "copa":
-        selected_choice = example["choice1"] if label_name == "choice1" else example["choice2"]
-        return (
-            "Reasoning: The correct option should best satisfy the requested causal relation.\n"
-            f"Reasoning: The better choice in this case is: {selected_choice}\n"
-            f"Final Label: {label_name}"
-        )
-
-    if task == "cb":
-        return (
-            "Reasoning: Compare the hypothesis to the premise and determine entailment, contradiction, or neutrality.\n"
-            f"Reasoning: The best label is {label_name}.\n"
-            f"Final Label: {label_name}"
-        )
-
-    if task == "wsc":
-        relation = "does" if label_name == "True" else "does not"
-        return (
-            "Reasoning: Resolve whether span2 co-refers to span1 based on sentence context.\n"
-            f"Reasoning: In this sentence, span2 {relation} refer to span1.\n"
-            f"Final Label: {label_name}"
-        )
-
-    raise ValueError(f"Unsupported task '{task}'.")
+    _ = task, example
+    return f"Final Label: {label_name}"
 
 
-def _build_teacher_prompt(prompt_text: str, output_text: str) -> str:
-    return _TEACHER_PROMPT_TEMPLATE.substitute(prompt_text=prompt_text, output_text=output_text)
+def _build_teacher_prompt(prompt_text: str, correct_label: str) -> str:
+    return _TEACHER_PROMPT_TEMPLATE.substitute(prompt_text=prompt_text, correct_label=correct_label)
 
 
 def load_superglue_small_dataset(
@@ -165,10 +113,7 @@ def load_superglue_small_dataset(
     def format_train_example(example: dict) -> dict:
         prompt_text = _render_student_prompt(normalized_task, example)
         label_name = _label_name(normalized_task, int(example["label"]))
-        teacher_prompt_text = _build_teacher_prompt(
-            prompt_text=prompt_text,
-            output_text=_render_demonstration(normalized_task, example, label_name),
-        )
+        teacher_prompt_text = _build_teacher_prompt(prompt_text=prompt_text, correct_label=label_name)
         return {
             "prompt": [{"role": "user", "content": prompt_text}],
             "teacher_prompt": [{"role": "user", "content": teacher_prompt_text}],
@@ -204,7 +149,7 @@ def load_superglue_small_sft_dataset(
         prompt_text = _render_student_prompt(normalized_task, example)
         label_name = _label_name(normalized_task, int(example["label"]))
         completion_text = _render_gold_completion(normalized_task, example, label_name)
-        teacher_prompt_text = _build_teacher_prompt(prompt_text=prompt_text, output_text=completion_text)
+        teacher_prompt_text = _build_teacher_prompt(prompt_text=prompt_text, correct_label=label_name)
         return {
             "prompt": prompt_text,
             "completion": completion_text,

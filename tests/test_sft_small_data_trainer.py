@@ -142,6 +142,66 @@ class SmallDataSFTTrainerTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Potential evaluation leakage"):
                 SmallDataSFTTrainer.evaluate(trainer)
 
+    def test_evaluate_does_not_raise_for_label_options_instruction(self):
+        trainer = SmallDataSFTTrainer.__new__(SmallDataSFTTrainer)
+        trainer.raw_eval_dataset = [
+            {
+                "prompt": (
+                    "Task: Coreference resolution.\n"
+                    "Give your reasoning, then end with exactly one final line in this format:\n"
+                    "Final Label: True OR Final Label: False\n\n"
+                    "Text: Alice thanked Bob because he helped.\n"
+                    "span1: Bob\n"
+                    "span2: he"
+                ),
+                "completion": "Final Label: True",
+                "teacher_prompt": "Teacher prompt",
+                "eval_label": "True",
+                "eval_task": "wsc",
+            }
+        ]
+        trainer.log_input_examples = False
+        trainer.log_examples_eval_only = True
+        trainer.eval_deterministic = True
+        trainer.state = SimpleNamespace(global_step=7)
+        trainer.args = SimpleNamespace(report_to=[])
+        trainer.is_world_process_zero = lambda: True
+        trainer.log = lambda payload: payload
+        trainer._generate_eval_predictions = lambda: ["Reasoning...\nFinal Label: True"]
+
+        with patch("sdft.trainers.sft_small_data.SFTTrainer.evaluate", return_value={"eval_loss": 0.1}):
+            metrics = SmallDataSFTTrainer.evaluate(trainer)
+
+        self.assertEqual(metrics["eval_small_data_accuracy"], 1.0)
+
+    def test_evaluate_adds_tooluse_metrics(self):
+        trainer = SmallDataSFTTrainer.__new__(SmallDataSFTTrainer)
+        trainer.raw_eval_dataset = [
+            {
+                "prompt": "Prompt",
+                "teacher_prompt": "Teacher prompt",
+                "golden_answer": [{"Action": "search", "Action_Input": '{"query": "weather"}'}],
+            }
+        ]
+        trainer.log_input_examples = False
+        trainer.log_examples_eval_only = True
+        trainer.eval_deterministic = True
+        trainer.state = SimpleNamespace(global_step=9)
+        trainer.args = SimpleNamespace(report_to=[])
+        trainer.is_world_process_zero = lambda: True
+        logged = {}
+        trainer.log = lambda payload: logged.update(payload)
+        trainer._generate_eval_predictions = lambda: ['Action: search\nAction Input: {"query": "weather"}']
+
+        with patch("sdft.trainers.sft_small_data.SFTTrainer.evaluate", return_value={"eval_loss": 0.2}):
+            metrics = SmallDataSFTTrainer.evaluate(trainer)
+
+        self.assertEqual(metrics["eval_loss"], 0.2)
+        self.assertEqual(metrics["eval_tooluse_strict_match"], 1.0)
+        self.assertEqual(metrics["eval_tooluse_parse_success"], 1.0)
+        self.assertEqual(metrics["eval_tooluse_action_name_match"], 1.0)
+        self.assertEqual(logged["eval_tooluse_strict_match"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

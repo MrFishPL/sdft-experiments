@@ -620,11 +620,11 @@ class DistilConfig(TrainingArguments):
         metadata={"help": "Whether to use the Liger GRPO loss."},
     )
     num_loss_tokens_to_skip: int = field(
-        default=0,
+        default=3,
         metadata={
             "help": "Number of tokens at the beginning of each completion to exclude from the loss calculation. "
             "This can be useful to avoid penalizing the model for the initial tokens of the response, which may be "
-            "less predictable. A value of `0` (default) means all completion tokens are included in the loss."
+            "less predictable. A value of `0` means all completion tokens are included in the loss."
         },
     )
     vllm_importance_sampling_correction: bool = field(
