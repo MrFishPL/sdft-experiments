@@ -66,6 +66,7 @@ class SamplingMixinTest(unittest.TestCase):
 
         self.assertIsInstance(sampler, RepeatSampler)
         self.assertEqual(sampler.mini_repeat_count, 1)
+        self.assertFalse(sampler.shuffle)
         self.assertEqual(sampler.seed, 123)
 
     def test_train_dataloader_uses_generation_batch_size(self):

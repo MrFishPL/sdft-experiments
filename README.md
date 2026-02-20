@@ -31,9 +31,8 @@ effective_bs = DEVICE_BS * ACCUM_STEPS * NUM_GPUS
 
 How `TARGET_UPDATES` is applied:
 - SFT runs: optimizer steps = `TARGET_UPDATES`
-- SDFT runs: optimizer steps = `ceil(TARGET_UPDATES / NUM_GENERATIONS)`
-- SDFT therefore guarantees at least `TARGET_UPDATES` update units via:
-  - `resolved_update_units = optimizer_steps * NUM_GENERATIONS`
+- SDFT runs: optimizer steps = `TARGET_UPDATES`
+- `NUM_GENERATIONS` changes sampling multiplicity inside each SDFT step, not step count.
 
 Override if needed:
 ```bash
@@ -43,11 +42,15 @@ TARGET_UPDATES=2000 bash scripts/run_sdft_full.sh
 ## Evaluation Defaults
 - Validation every `EVAL_STEPS` steps (default `10` in runner scripts)
 - Validation at step 0 (`--eval_before_train`)
-- Final validation after training (`--final_eval`)
+- No final validation by default (pass `--final_eval` manually if needed)
 
 Primary metrics:
 - SuperGLUE small tasks: `eval_small_data_accuracy`
 - Tool-use task: `eval_tooluse_strict_match`
+
+Comparability metrics:
+- Initial (before any optimizer step): `eval_init_small_data_accuracy` / `eval_init_tooluse_strict_match`
+- Optional final (if `--final_eval` is enabled): `eval_final_small_data_accuracy` / `eval_final_tooluse_strict_match`
 
 ## Few-Shot Data Sources
 - SuperGLUE curated 5-shot subsets:

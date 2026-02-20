@@ -23,7 +23,8 @@ LOG_ROOT="${LOG_ROOT:-${REPO_ROOT}/logs/runs}"
 TARGET_UPDATES="${TARGET_UPDATES:-512}"
 NUM_GENERATIONS="${NUM_GENERATIONS:-1}"
 REF_MODEL_MIXUP_ALPHA="${REF_MODEL_MIXUP_ALPHA:-0.02}"
-DISTIL_ALPHA="${DISTIL_ALPHA:-1.0}"
+DISTIL_ALPHA="${DISTIL_ALPHA:-0.0}"
+DISTIL_GENERATION_BATCH_SIZE="${DISTIL_GENERATION_BATCH_SIZE:-}"
 FEWSHOT_INDICES_FILE="${FEWSHOT_INDICES_FILE:-${REPO_ROOT}/data/superglue_fewshot_5shot_curated.json}"
 FEWSHOT_NUM_EXAMPLES="${FEWSHOT_NUM_EXAMPLES:--1}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -88,8 +89,7 @@ if (( TARGET_UPDATES <= 0 )); then
   echo "TARGET_UPDATES must be >= 1 (got ${TARGET_UPDATES})" >&2
   exit 1
 fi
-OPTIMIZER_STEPS=$(( (TARGET_UPDATES + NUM_GENERATIONS - 1) / NUM_GENERATIONS ))
-REALIZED_UPDATES=$(( OPTIMIZER_STEPS * NUM_GENERATIONS ))
+OPTIMIZER_STEPS="${TARGET_UPDATES}"
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 RUN_NAME="${TASK}_sdft_fewshot_ng${NUM_GENERATIONS}"
@@ -115,19 +115,21 @@ CMD=(
   --max_prompt_length "${MAX_PROMPT_LENGTH}"
   --max_completion_length "${MAX_COMPLETION_LENGTH}"
   --num_generations "${NUM_GENERATIONS}"
-  --distil_generation_batch_size "${NUM_GENERATIONS}"
   --distil_alpha "${DISTIL_ALPHA}"
   --max_grad_norm "${MAX_GRAD_NORM}"
   --warmup_steps "${WARMUP_STEPS}"
   --eval_deterministic
   --eval_before_train
-  --final_eval
   --paper_hparams
   --run_name "${RUN_NAME}"
   --log_input_examples
   --log_examples_eval_only
   --fewshot_num_examples "${FEWSHOT_NUM_EXAMPLES}"
 )
+
+if [[ -n "${DISTIL_GENERATION_BATCH_SIZE}" ]]; then
+  CMD+=(--distil_generation_batch_size "${DISTIL_GENERATION_BATCH_SIZE}")
+fi
 
 if [[ "${TASK}" == "tooluse" ]]; then
   CMD+=(--tooluse_fewshot_one_per_name)
@@ -138,11 +140,12 @@ fi
 echo "=== SDFT FEWSHOT ==="
 echo "task=${TASK}"
 echo "num_generations=${NUM_GENERATIONS}"
+echo "distil_alpha=${DISTIL_ALPHA}"
+echo "distil_generation_batch_size=${DISTIL_GENERATION_BATCH_SIZE:-auto}"
 echo "train_samples=${TRAIN_SAMPLES}"
 echo "effective_bs=${EFFECTIVE_BS}"
 echo "target_updates=${TARGET_UPDATES}"
 echo "resolved_optimizer_steps=${OPTIMIZER_STEPS}"
-echo "resolved_update_units=${REALIZED_UPDATES}"
 echo "run_dir=${RUN_DIR}"
 echo "log_file=${LOG_FILE}"
 

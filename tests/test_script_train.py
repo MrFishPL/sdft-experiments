@@ -20,7 +20,7 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertEqual(args.task, "tooluse")
         self.assertTrue(args.eval_deterministic)
         self.assertTrue(args.eval_before_train)
-        self.assertTrue(args.final_eval)
+        self.assertFalse(args.final_eval)
         self.assertIsNone(args.log_input_examples)
         self.assertTrue(args.log_examples_eval_only)
         self.assertEqual(args.target_updates, 512)
@@ -30,7 +30,7 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertIsNone(args.fewshot_num_examples)
         self.assertIsNone(args.distil_generation_batch_size)
         self.assertFalse(args.tooluse_fewshot_one_per_name)
-        self.assertEqual(args.distil_alpha, 1.0)
+        self.assertEqual(args.distil_alpha, 0.0)
 
     def test_parse_args_overrides(self):
         with patch.object(
@@ -82,7 +82,7 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertTrue(args.tooluse_fewshot_one_per_name)
         self.assertEqual(args.distil_alpha, 0.5)
 
-    def test_build_distil_config_resolves_target_updates_with_num_generations(self):
+    def test_build_distil_config_uses_target_updates_as_max_steps(self):
         args = self._base_args(method="sdft", task="wsc")
         args.target_updates = 1001
         args.num_generations = 16
@@ -92,7 +92,7 @@ class ScriptTrainTest(unittest.TestCase):
         ):
             cfg = train_script._build_distil_config(args)
 
-        self.assertEqual(cfg.max_steps, 63)
+        self.assertEqual(cfg.max_steps, 1001)
 
     def _base_args(self, *, method: str, task: str) -> SimpleNamespace:
         return SimpleNamespace(
@@ -129,7 +129,7 @@ class ScriptTrainTest(unittest.TestCase):
             fewshot_num_examples=None,
             distil_generation_batch_size=None,
             tooluse_fewshot_one_per_name=False,
-            distil_alpha=1.0,
+            distil_alpha=0.0,
         )
 
     def test_main_dispatches_sdft_and_runs_eval_before_after_train(self):
@@ -191,7 +191,7 @@ class ScriptTrainTest(unittest.TestCase):
         self.assertTrue(cfg.eval_deterministic)
         self.assertTrue(cfg.log_completions)  # default True for small-data tasks
         self.assertTrue(cfg.log_examples_eval_only)
-        self.assertEqual(cfg.max_steps, 250)
+        self.assertEqual(cfg.max_steps, 1000)
 
     def test_main_dispatches_sft_and_uses_small_data_trainer(self):
         parsed = self._base_args(method="sft", task="wsc")

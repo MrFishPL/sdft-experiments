@@ -1,6 +1,6 @@
 import argparse
+import inspect
 import json
-import math
 import sys
 from pathlib import Path
 
@@ -112,17 +112,16 @@ def parse_args():
         type=int,
         default=512,
         help=(
-            "Training budget in update units. "
-            "For SFT this equals optimizer steps. "
-            "For SDFT, optimizer steps are ceil(target_updates / num_generations)."
+            "Training budget in optimizer steps. "
+            "Applied identically for SFT and SDFT."
         ),
     )
     parser.add_argument("--run_name", type=str, default=None, help="WandB run name")
     parser.add_argument(
         "--use_vllm",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use vLLM for generation when runtime linkage is available.",
+        default=False,
+        help="(Temporarily disabled) Placeholder flag for future vLLM support.",
     )
     parser.add_argument(
         "--eval_deterministic",
@@ -139,7 +138,7 @@ def parse_args():
     parser.add_argument(
         "--final_eval",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Run one evaluation pass after training completes.",
     )
     parser.add_argument(
@@ -187,7 +186,7 @@ def parse_args():
     parser.add_argument(
         "--distil_alpha",
         type=float,
-        default=1.0,
+        default=0.0,
         help="Distillation divergence interpolation alpha (1.0 = reverse KL, 0.0 = forward KL).",
     )
     return parser.parse_args()
@@ -237,12 +236,7 @@ def _resolve_target_updates(args: argparse.Namespace) -> int:
 
 
 def _resolve_max_steps(args: argparse.Namespace) -> int:
-    target_updates = _resolve_target_updates(args)
-    if args.method == "sdft":
-        if args.num_generations <= 0:
-            raise ValueError("num_generations must be > 0")
-        return math.ceil(target_updates / args.num_generations)
-    return target_updates
+    return _resolve_target_updates(args)
 
 
 def _load_fewshot_train_indices(args: argparse.Namespace) -> list[int] | None:
@@ -288,9 +282,41 @@ def _load_fewshot_train_indices(args: argparse.Namespace) -> list[int] | None:
     return train_indices
 
 
+def _evaluate_with_prefix(trainer, metric_key_prefix: str):
+    evaluate_signature = inspect.signature(trainer.evaluate)
+    if "metric_key_prefix" in evaluate_signature.parameters:
+        return trainer.evaluate(metric_key_prefix=metric_key_prefix)
+    return trainer.evaluate()
+
+
+def _json_safe_metric_value(value):
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:  # pragma: no cover - defensive fallback
+            return str(value)
+    return str(value)
+
+
+def _emit_eval_metrics(tag: str, metrics: dict[str, object] | None) -> None:
+    if not metrics:
+        return
+    payload = {key: _json_safe_metric_value(value) for key, value in metrics.items()}
+    print(f"[{tag}] {json.dumps(payload, sort_keys=True)}")
+
+
 def _build_distil_config(args: argparse.Namespace) -> DistilConfig:
     do_eval = args.eval_strategy != "no"
-    use_vllm = args.use_vllm and _vllm_runtime_usable()
+    # vLLM path is intentionally disabled for now. Keep the CLI arg as a no-op
+    # so we can re-enable this cleanly once runtime support is available.
+    use_vllm = False
+    if args.use_vllm:
+        print(
+            "[train.py] vLLM is temporarily disabled in this repo; forcing use_vllm=False.",
+            file=sys.stderr,
+        )
     gradient_accumulation_steps = _resolve_gradient_accumulation_steps(args)
     max_grad_norm = _resolve_max_grad_norm(args)
     num_loss_tokens_to_skip = _resolve_num_loss_tokens_to_skip(args)
@@ -503,10 +529,12 @@ def main() -> None:
         )
 
     if config.do_eval and args.eval_before_train and eval_dataset is not None:
-        trainer.evaluate()
+        init_metrics = _evaluate_with_prefix(trainer, metric_key_prefix="eval_init")
+        _emit_eval_metrics("eval_init", init_metrics)
     trainer.train()
     if config.do_eval and args.final_eval and eval_dataset is not None:
-        trainer.evaluate()
+        final_metrics = _evaluate_with_prefix(trainer, metric_key_prefix="eval_final")
+        _emit_eval_metrics("eval_final", final_metrics)
 
 
 if __name__ == "__main__":

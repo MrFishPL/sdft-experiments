@@ -17,7 +17,9 @@ Reference for this example:
 The correct label is: $correct_label
 
 Write your own response with a clear reasoning process.
-Your last line must be exactly: Final Label: $correct_label
+Use this exact output structure:
+Reasoning: <your reasoning>
+Final Label: $correct_label
 """.strip()
 )
 

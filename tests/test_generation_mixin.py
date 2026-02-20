@@ -164,6 +164,22 @@ class GenerationMixinTest(unittest.TestCase):
         self.assertEqual(trainer._metrics["eval"]["small_data_accuracy"][0], 1.0)
         self.assertEqual(trainer._metrics["eval"]["small_data_parse_success"][0], 1.0)
 
+    def test_log_small_data_eval_metrics_keeps_per_example_values(self):
+        trainer = _DummyGenerationMetricsTrainer()
+        inputs = [
+            {"eval_label": "choice1", "eval_task": "copa"},
+            {"eval_label": "choice2", "eval_task": "copa"},
+        ]
+        completions = [
+            "Reasoning: ...\nFinal Label: choice1",
+            "Reasoning: ...\nFinal Label: choice1",
+        ]
+
+        trainer._log_small_data_eval_metrics(inputs=inputs, completions_text=completions, device=torch.device("cpu"))
+
+        self.assertEqual(trainer._metrics["eval"]["small_data_accuracy"], [1.0, 0.0])
+        self.assertEqual(trainer._metrics["eval"]["small_data_parse_success"], [1.0, 1.0])
+
     def test_eval_vllm_server_uses_single_generation_and_deterministic_decode(self):
         trainer = _DummyEvalGenerationTrainer()
         prompts = ["p0", "p1", "p2", "p3"]

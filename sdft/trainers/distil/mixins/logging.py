@@ -9,7 +9,8 @@ class LoggingMixin:
         # This method can be called both in training and evaluation. When called in evaluation, the keys in `logs`
         # start with "eval_". We need to add the prefix "eval_" to the keys in `metrics` to match the format.
         if mode == "eval":
-            metrics = {f"eval_{key}": val for key, val in metrics.items()}
+            eval_prefix = getattr(self, "_active_metric_key_prefix", "eval")
+            metrics = {f"{eval_prefix}_{key}": val for key, val in metrics.items()}
 
         # Update in-place so caller-visible metrics (e.g. from Trainer.evaluate) include custom entries.
         logs.update(metrics)

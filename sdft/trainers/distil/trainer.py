@@ -177,6 +177,7 @@ class DistilTrainer(
         self.alpha = args.alpha
         self.full_logit_distillation = args.full_logit_distillation
         self.generate_from_teacher = args.generate_from_teacher
+        self._active_metric_key_prefix = "eval"
         if ref_model is not None:
             # If a reference model is provided, use it
             self.ref_model = ref_model
@@ -341,3 +342,19 @@ class DistilTrainer(
 
         if args.sync_ref_model:
             self.add_callback(MemoryEfficientSyncRefModelCallback(ref_model=self.ref_model, accelerator=self.accelerator))
+
+    def evaluate(
+        self,
+        eval_dataset: Optional[Union[Dataset, IterableDataset, dict[str, Union[Dataset, IterableDataset]]]] = None,
+        ignore_keys: Optional[list[str]] = None,
+        metric_key_prefix: str = "eval",
+    ):
+        self._active_metric_key_prefix = metric_key_prefix
+        try:
+            return super().evaluate(
+                eval_dataset=eval_dataset,
+                ignore_keys=ignore_keys,
+                metric_key_prefix=metric_key_prefix,
+            )
+        finally:
+            self._active_metric_key_prefix = "eval"

@@ -28,7 +28,8 @@ class GenerationMixin:
         metric_lists = score_tooluse_predictions(completions_text, references)
         for metric_name, values in metric_lists.items():
             values_tensor = torch.tensor(values, dtype=torch.float32, device=device)
-            self._metrics["eval"][f"tooluse_{metric_name}"].append(self.accelerator.gather(values_tensor).mean().item())
+            gathered_values = self.accelerator.gather(values_tensor).tolist()
+            self._metrics["eval"][f"tooluse_{metric_name}"].extend(gathered_values)
 
     def _log_small_data_eval_metrics(
         self,
@@ -44,9 +45,8 @@ class GenerationMixin:
         metric_lists = score_small_data_predictions(completions_text, references, tasks)
         for metric_name, values in metric_lists.items():
             values_tensor = torch.tensor(values, dtype=torch.float32, device=device)
-            self._metrics["eval"][f"small_data_{metric_name}"].append(
-                self.accelerator.gather(values_tensor).mean().item()
-            )
+            gathered_values = self.accelerator.gather(values_tensor).tolist()
+            self._metrics["eval"][f"small_data_{metric_name}"].extend(gathered_values)
 
     def _prepare_inputs(
         self, generation_batch: dict[str, Union[torch.Tensor, Any]]

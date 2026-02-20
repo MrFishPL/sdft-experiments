@@ -95,9 +95,12 @@ class SamplingMixin:
         )
 
     def _get_eval_sampler(self, eval_dataset) -> Sampler:
-        # Evaluation uses exactly one generation per validation example.
+        # Keep evaluation order fixed across methods/runs. In bf16 generation the
+        # batch composition can influence greedy decoding, so deterministic
+        # sequential eval is required for comparable init metrics.
         return RepeatSampler(
             data_source=eval_dataset,
             mini_repeat_count=1,
+            shuffle=False,
             seed=self.args.seed,
         )

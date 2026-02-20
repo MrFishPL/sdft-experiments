@@ -4,7 +4,9 @@ import time
 from typing import Any, Optional
 
 import torch
+from transformers import GenerationConfig
 from trl import SFTTrainer
+from trl.data_utils import maybe_apply_chat_template
 
 from sdft.eval import score_small_data_predictions, score_tooluse_predictions
 
@@ -97,7 +99,18 @@ class SmallDataSFTTrainer(SFTTrainer):
         if self.raw_eval_dataset is None or len(self.raw_eval_dataset) == 0:
             return []
 
-        prompts = [str(row["prompt"]) for row in self.raw_eval_dataset]
+        # Align eval prompt formatting with DistilTrainer: always generate from a
+        # chat-templated user prompt so SFT/SDFT metrics are directly comparable.
+        prompts: list[str] = []
+        for row in self.raw_eval_dataset:
+            raw_prompt = row["prompt"]
+            conversational_prompt: list[dict[str, str]]
+            if isinstance(raw_prompt, list):
+                conversational_prompt = raw_prompt
+            else:
+                conversational_prompt = [{"role": "user", "content": str(raw_prompt)}]
+            templated = maybe_apply_chat_template({"prompt": conversational_prompt}, self.processing_class)["prompt"]
+            prompts.append(templated)
         batch_size = max(1, int(getattr(self.args, "per_device_eval_batch_size", 1)))
         predictions: list[str] = []
 
@@ -125,21 +138,39 @@ class SmallDataSFTTrainer(SFTTrainer):
                 generation_kwargs = {
                     "max_new_tokens": self.max_completion_length,
                     "pad_token_id": tokenizer.pad_token_id,
+                    "bos_token_id": tokenizer.bos_token_id,
                     "eos_token_id": tokenizer.eos_token_id,
                     "do_sample": not self.eval_deterministic,
+                    "temperature": 1.0,
+                    "top_p": 1.0,
+                    "top_k": None,
+                    "repetition_penalty": 1.0,
                 }
+                cache_implementation = getattr(self.args, "cache_implementation", None)
+                if cache_implementation is not None:
+                    generation_kwargs["cache_implementation"] = cache_implementation
+                generation_config = GenerationConfig(**generation_kwargs)
                 if self.eval_deterministic:
-                    generation_kwargs["temperature"] = 1.0
-                else:
-                    generation_kwargs["temperature"] = 1.0
-                    generation_kwargs["top_p"] = 1.0
+                    generation_config = GenerationConfig.from_dict(generation_config.to_dict())
+                    generation_config.do_sample = False
 
                 with torch.no_grad():
-                    outputs = model.generate(**encoded, **generation_kwargs)
+                    outputs = model.generate(**encoded, generation_config=generation_config, disable_compile=True)
 
                 prompt_len = encoded["input_ids"].shape[1]
                 completion_ids = outputs[:, prompt_len:]
-                predictions.extend(tokenizer.batch_decode(completion_ids, skip_special_tokens=True))
+                is_eos = completion_ids == tokenizer.eos_token_id
+                eos_idx = torch.full(
+                    (is_eos.size(0),),
+                    is_eos.size(1),
+                    dtype=torch.long,
+                    device=completion_ids.device,
+                )
+                eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
+                seq_idx = torch.arange(is_eos.size(1), device=completion_ids.device).expand(is_eos.size(0), -1)
+                completion_mask = (seq_idx <= eos_idx.unsqueeze(1)).int()
+                completion_ids_list = [c[m.bool()].tolist() for c, m in zip(completion_ids, completion_mask)]
+                predictions.extend(tokenizer.batch_decode(completion_ids_list, skip_special_tokens=True))
 
             if was_training:
                 model.train()

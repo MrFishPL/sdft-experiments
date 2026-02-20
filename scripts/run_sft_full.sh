@@ -95,7 +95,6 @@ CMD=(
   --warmup_steps "${WARMUP_STEPS}"
   --eval_deterministic
   --eval_before_train
-  --final_eval
   --paper_hparams
   --run_name "${RUN_NAME}"
   --log_input_examples
